@@ -1,6 +1,6 @@
 import { StorageAdapter, LocalStorageAdapter } from './storageAdapter';
 import * as Models from './models';
-import { Person, Product, Service, Invoice, InvoiceItem, StockLog } from '../types';
+import { Person, Product, Service, Invoice, InvoiceItem, StockLog, Warehouse, Category } from '../types';
 
 // Storage keys
 export const STORAGE_KEYS = {
@@ -16,9 +16,15 @@ export const STORAGE_KEYS = {
   STOCK_MOVEMENTS: 'shop_accounting_stock_movements',
   SERVICE_ORDERS: 'shop_accounting_service_orders',
   USERS: 'shop_accounting_users',
+  WAREHOUSES: 'shop_accounting_warehouses',
 };
 
 // Initial Seed Data to preserve user's application defaults
+const DEFAULT_WAREHOUSES: Warehouse[] = [
+  { id: 'wh_central', name: 'انبار مرکزی (سوله دپوی قطران)', code: 'WH-01', location: 'خاوران، خیابان قطران، پلاک ۱۲', notes: 'دپوی انبارداری کل قطعات و کالاهای فیزیکی بزرگ توزیع و پخش فروشگاه آریا', isActive: true },
+  { id: 'wh_store', name: 'انبار مغازه (ویترین عرضه)', code: 'WH-02', location: 'طبقه همکف فروشگاه، قفسه‌های پشتی', notes: 'کالاهای آماده تحویل سریع با قابلیت کسر مستقیم از صنف پوز صنف آریا', isActive: true }
+];
+
 const DEFAULT_USERS: Models.User[] = [
   { id: 'user_admin', username: 'admin', fullName: 'مدیر سیستم', role: 'Admin', isActive: true, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
   { id: 'user_sales', username: 'sales', fullName: 'صندوق‌دار فروشگاه', role: 'Salesperson', isActive: true, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
@@ -164,6 +170,11 @@ export class DatabaseService {
       this.saveDataToStorage(STORAGE_KEYS.STOCK_LOGS, DEFAULT_STOCK_LOGS);
       this.logSql("CREATE TABLE IF NOT EXISTS stock_logs (id TEXT PRIMARY KEY, product_id TEXT, product_title TEXT, previous_qty INTEGER, new_qty INTEGER, change_qty INTEGER, reason TEXT, created_at TEXT);");
     }
+    if (!this.adapter.getItem(STORAGE_KEYS.WAREHOUSES)) {
+      this.saveDataToStorage(STORAGE_KEYS.WAREHOUSES, DEFAULT_WAREHOUSES);
+      this.logSql("CREATE TABLE IF NOT EXISTS warehouses (id TEXT PRIMARY KEY, name TEXT, code TEXT, location TEXT, notes TEXT, isActive INTEGER);");
+      this.logSql("INSERT INTO warehouses VALUES ... (Seeded Default Central and Storefront Warehouses)");
+    }
     if (!this.adapter.getItem(STORAGE_KEYS.USERS)) {
       this.saveDataToStorage(STORAGE_KEYS.USERS, DEFAULT_USERS);
       this.logSql("CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, username TEXT UNIQUE, fullName TEXT, role TEXT, isActive INTEGER, createdAt TEXT, updatedAt TEXT);");
@@ -207,8 +218,19 @@ export class DatabaseService {
   // --- PRODUCTS OPERATIONS ---
   getProducts(): Product[] {
     const list = this.loadDataFromStorage<Product>(STORAGE_KEYS.PRODUCTS);
+    let updated = false;
+    const migrated = list.map(p => {
+      if (!p.warehouse_stocks) {
+        p.warehouse_stocks = { wh_central: p.stock_quantity || 0 };
+        updated = true;
+      }
+      return p;
+    });
+    if (updated) {
+      this.saveDataToStorage(STORAGE_KEYS.PRODUCTS, migrated);
+    }
     this.logSql("SELECT * FROM products ORDER BY title ASC;");
-    return list;
+    return migrated;
   }
 
   saveProduct(product: Omit<Product, 'id'> & { id?: string }): Product {
@@ -409,8 +431,50 @@ export class DatabaseService {
     this.logSql(`DELETE FROM invoices WHERE id='${id}';`);
   }
 
-  private addStockLog(productId: string, productTitle: string, prev: number, next: number, reason: string) {
+  addStockLog(
+    productId: string,
+    productTitle: string,
+    prev: number,
+    next: number,
+    reason: string,
+    warehouseId?: string,
+    warehouseName?: string,
+    operatorName?: string
+  ) {
     const list = this.loadDataFromStorage<StockLog>(STORAGE_KEYS.STOCK_LOGS);
+    
+    // Auto auditor detection
+    let finalOperator = operatorName || 'مدیر سیستم';
+    if (!operatorName) {
+      try {
+        const activeUserRaw = localStorage.getItem('shop_accounting_active_user');
+        if (activeUserRaw) {
+          const userObj = JSON.parse(activeUserRaw);
+          if (userObj && userObj.fullName) {
+            finalOperator = userObj.fullName;
+          }
+        }
+      } catch (e) {
+        console.error("Error reading active auditor", e);
+      }
+    }
+
+    // Auto warehouse detection
+    let finalWhId = warehouseId || 'wh_central';
+    let finalWhName = warehouseName || 'انبار مرکزی (سوله دپوی قطران)';
+    if (!warehouseId) {
+      try {
+        const contextRaw = localStorage.getItem('shop_accounting_current_warehouse_context');
+        if (contextRaw) {
+          const whObj = JSON.parse(contextRaw);
+          if (whObj && whObj.id) {
+            finalWhId = whObj.id;
+            finalWhName = whObj.name;
+          }
+        }
+      } catch (e) {}
+    }
+
     const newLog: StockLog = {
       id: `log_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
       product_id: productId,
@@ -419,11 +483,14 @@ export class DatabaseService {
       new_qty: next,
       change_qty: next - prev,
       reason,
-      created_at: new Date().toISOString()
+      created_at: new Date().toISOString(),
+      user_name: finalOperator,
+      warehouse_id: finalWhId,
+      warehouse_name: finalWhName
     };
     list.push(newLog);
     this.saveDataToStorage(STORAGE_KEYS.STOCK_LOGS, list);
-    this.logSql(`INSERT INTO stock_logs (id, product_id, product_title, previous_qty, new_qty, change_qty, reason, created_at) VALUES ('${newLog.id}', '${productId}', '${productTitle}', ${prev}, ${next}, ${next - prev}, '${reason}', datetime('now'));`);
+    this.logSql(`INSERT INTO stock_logs (id, product_id, product_title, previous_qty, new_qty, change_qty, reason, created_at, user_name, warehouse_id) VALUES ('${newLog.id}', '${productId}', '${productTitle}', ${prev}, ${next}, ${next - prev}, '${reason}', datetime('now'), '${finalOperator}', '${finalWhId}');`);
   }
 
   // Backup import/export operations
@@ -459,19 +526,6 @@ export class DatabaseService {
 
   // --- COMPATIBLE METHODS IMPLEMENTATION FOR NEW MODEL INTERFACES ONLY ---
   // If we ever want to do direct CRUD on Category, Payment, Expense etc:
-  getCategories(): Models.Category[] {
-    return this.loadDataFromStorage<Models.Category>(STORAGE_KEYS.CATEGORIES);
-  }
-  
-  saveCategory(category: Models.Category): Models.Category {
-    const categories = this.getCategories();
-    const idx = categories.findIndex(c => c.id === category.id);
-    if (idx >= 0) categories[idx] = category;
-    else categories.push(category);
-    this.saveDataToStorage(STORAGE_KEYS.CATEGORIES, categories);
-    return category;
-  }
-
   getPayments(): Models.Payment[] {
     return this.loadDataFromStorage<Models.Payment>(STORAGE_KEYS.PAYMENTS);
   }
@@ -519,6 +573,121 @@ export class DatabaseService {
     const list = this.loadDataFromStorage<Models.User>(STORAGE_KEYS.USERS);
     this.logSql("SELECT * FROM users ORDER BY username ASC;");
     return list;
+  }
+
+  // --- WAREHOUSES CRUD OPERATIONS ---
+  getWarehouses(): Warehouse[] {
+    const list = this.loadDataFromStorage<Warehouse>(STORAGE_KEYS.WAREHOUSES);
+    if (!list || list.length === 0) {
+      this.saveDataToStorage(STORAGE_KEYS.WAREHOUSES, DEFAULT_WAREHOUSES);
+      return DEFAULT_WAREHOUSES;
+    }
+    this.logSql("SELECT * FROM warehouses ORDER BY name ASC;");
+    return list;
+  }
+
+  saveWarehouse(warehouse: Omit<Warehouse, 'id'> & { id?: string }): Warehouse {
+    const list = this.getWarehouses();
+    const id = warehouse.id || `wh_${Date.now()}`;
+    const newWarehouse: Warehouse = { ...warehouse, id };
+
+    const idx = list.findIndex(w => w.id === id);
+    if (idx >= 0) {
+      list[idx] = newWarehouse;
+      this.logSql(`UPDATE warehouses SET name='${warehouse.name}', code='${warehouse.code}', location='${warehouse.location}', notes='${warehouse.notes || ''}', isActive=${warehouse.isActive ? 1 : 0} WHERE id='${id}';`);
+    } else {
+      list.push(newWarehouse);
+      this.logSql(`INSERT INTO warehouses (id, name, code, location, notes, isActive) VALUES ('${id}', '${warehouse.name}', '${warehouse.code}', '${warehouse.location}', '${warehouse.notes || ''}', ${warehouse.isActive ? 1 : 0});`);
+    }
+    this.saveDataToStorage(STORAGE_KEYS.WAREHOUSES, list);
+    return newWarehouse;
+  }
+
+  deleteWarehouse(id: string): boolean {
+    if (id === 'wh_central' || id === 'wh_store') return false;
+    const list = this.getWarehouses();
+    const filtered = list.filter(w => w.id !== id);
+    this.saveDataToStorage(STORAGE_KEYS.WAREHOUSES, filtered);
+    this.logSql(`DELETE FROM warehouses WHERE id='${id}';`);
+    return true;
+  }
+
+  // --- CATEGORIES OPERATIONS (Tree-Structured) ---
+  getCategories(): Category[] {
+    const list = this.loadDataFromStorage<Category>(STORAGE_KEYS.CATEGORIES);
+    if (!list || list.length === 0) {
+      const defaults: Category[] = [
+        { id: 'cat_food', name: 'مواد غذایی و سوپر مارکتی', type: 'product', description: 'انواع مواد خوراکی، لبنی و سوپرمارکتی مغازه' },
+        { id: 'cat_rice', name: 'برنج و غلات دپو شده', parentId: 'cat_food', type: 'product', description: 'انواع برنج محلی هاشمی، وارداتی و حبوبات معین' },
+        { id: 'cat_oil', name: 'روغن و مایعات خوراکی', parentId: 'cat_food', type: 'product', description: 'روغن‌های سرخ‌کردنی و پخت و پز گیاهی کاله لادن' },
+        { id: 'cat_services', name: 'خدمات فنی و پشتیبانی فیزیکی', type: 'service', description: 'سرویس‌ها، دستمزد تعمیر، راه اندازی مجدد یا خدمات پیک سفارشی' }
+      ];
+      this.saveDataToStorage(STORAGE_KEYS.CATEGORIES, defaults);
+      return defaults;
+    }
+    this.logSql("SELECT * FROM categories ORDER BY name ASC;");
+    return list;
+  }
+
+  saveCategory(category: Omit<Category, 'id'> & { id?: string }): Category {
+    const list = this.getCategories();
+    const id = category.id || `cat_${Date.now()}`;
+    const newCategory: Category = { ...category, id };
+
+    const idx = list.findIndex(c => c.id === id);
+    if (idx >= 0) {
+      list[idx] = newCategory;
+      this.logSql(`UPDATE categories SET name='${category.name}', parentId='${category.parentId || ''}', type='${category.type}', description='${category.description || ''}' WHERE id='${id}';`);
+    } else {
+      list.push(newCategory);
+      this.logSql(`INSERT INTO categories (id, name, parentId, type, description) VALUES ('${id}', '${category.name}', '${category.parentId || ''}', '${category.type}', '${category.description || ''}');`);
+    }
+    this.saveDataToStorage(STORAGE_KEYS.CATEGORIES, list);
+    return newCategory;
+  }
+
+  deleteCategory(id: string): boolean {
+    const list = this.getCategories();
+    
+    // Unparent direct children
+    const updated = list.map(c => {
+      if (c.parentId === id) {
+        return { ...c, parentId: undefined };
+      }
+      return c;
+    });
+
+    const filtered = updated.filter(c => c.id !== id);
+    this.saveDataToStorage(STORAGE_KEYS.CATEGORIES, filtered);
+    this.logSql(`DELETE FROM categories WHERE id='${id}';`);
+
+    // Reset assigned categories in products
+    const products = this.getProducts();
+    let pChanged = false;
+    products.forEach(p => {
+      if (p.category_id === id) {
+        delete p.category_id;
+        pChanged = true;
+      }
+    });
+    if (pChanged) {
+      this.saveDataToStorage(STORAGE_KEYS.PRODUCTS, products);
+    }
+
+    // Reset assigned categories in services
+    const services = this.getServices();
+    let sChanged = false;
+    services.forEach(s => {
+      if (s.category_id === id) {
+        delete s.category_id;
+        sChanged = true;
+      }
+    });
+    if (sChanged) {
+      this.saveDataToStorage(STORAGE_KEYS.SERVICES, services);
+    }
+
+    return true;
   }
 
   saveUser(user: Models.User): Models.User {

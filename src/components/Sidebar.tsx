@@ -12,16 +12,20 @@ import {
   Eye,
   AlertTriangle,
   History,
-  FileSpreadsheet
+  FileSpreadsheet,
+  KeyRound,
+  Settings
 } from 'lucide-react';
 
 interface SidebarProps {
   activeTab: string;
   onTabChange: (tabId: string, parentMenuId: string | null) => void;
   lowStockCount: number;
+  currentUserRole?: string;
+  storeName?: string;
 }
 
-export default function Sidebar({ activeTab, onTabChange, lowStockCount }: SidebarProps) {
+export default function Sidebar({ activeTab, onTabChange, lowStockCount, currentUserRole = 'Admin', storeName }: SidebarProps) {
   // شبیه‌ساز تک‌منوی آکاردئونی: در هر لحظه فقط یک منوی اصلی می‌تواند باز باشد.
   const [expandedMenu, setExpandedMenu] = useState<string | null>('sales'); // پیشفرض بخش فاکتور باز باشد
 
@@ -47,6 +51,8 @@ export default function Sidebar({ activeTab, onTabChange, lowStockCount }: Sideb
       subMenus: [
         { id: 'persons-list', label: 'مدیریت اشخاص و حساب‌ها' },
         { id: 'persons-debtors', label: 'بدهکاران و بستانکاران' },
+        { id: 'persons-shareholders', label: 'سهامداران شرکت' },
+        { id: 'persons-employees', label: 'مدیریت کارمندان' },
       ]
     },
     {
@@ -55,6 +61,7 @@ export default function Sidebar({ activeTab, onTabChange, lowStockCount }: Sideb
       icon: ShoppingBag,
       subMenus: [
         { id: 'items-list', label: 'افزودن محصول و خدمات' },
+        { id: 'items-categories', label: 'مدیریت دسته‌بندی‌ها (درختی)' },
         { id: 'items-bulk-price', label: 'بروزرسانی لیست قیمت‌ها' },
       ]
     },
@@ -79,12 +86,93 @@ export default function Sidebar({ activeTab, onTabChange, lowStockCount }: Sideb
       ]
     },
     {
+      id: 'users-access',
+      label: 'کاربران و دسترسی‌ها',
+      icon: KeyRound,
+      isSingle: true,
+    },
+    {
+      id: 'settings',
+      label: 'تنظیمات',
+      icon: Settings,
+      subMenus: [
+        { id: 'settings-app', label: 'تنظیمات برنامه' },
+        { id: 'settings-print', label: 'تنظیمات چاپ' },
+        { id: 'settings-designer', label: 'طراحی فاکتور (المنتور)' },
+        { id: 'settings-store', label: 'اطلاعات فروشگاه' },
+      ]
+    },
+    {
       id: 'electron',
       label: 'برقراری اتصال Electron',
       icon: Cpu,
       isSingle: true,
     }
   ];
+
+  // فیلتر کردن منوها براساس نقش کاربر و دسترسی‌های اختصاصی کالیبره‌شده در ماژول فایروال
+  const getRolePermissions = (roleName: string): string[] => {
+    if (roleName === 'Admin') {
+      return [
+        'dashboard', 
+        'persons-list', 'persons-debtors', 'persons-shareholders', 'persons-employees',
+        'items-list', 'items-categories', 'items-bulk-price',
+        'quick-pos', 'standard-invoice', 'invoice-history',
+        'inventory-levels', 'inventory-logs',
+        'users-access', 'settings', 'electron'
+      ];
+    }
+    const raw = localStorage.getItem('shop_accounting_role_permissions');
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw);
+        if (parsed[roleName]) {
+          return parsed[roleName];
+        }
+      } catch (e) {}
+    }
+    
+    // مقادیر پش‌فرض پشتیبانی در صورت عدم ذخیره‌سازی قبلی
+    if (roleName === 'Salesperson') {
+      return ['dashboard', 'quick-pos', 'invoice-history', 'electron'];
+    }
+    if (roleName === 'Accountant') {
+      return [
+        'dashboard', 
+        'persons-list', 'persons-debtors', 'persons-shareholders',
+        'items-list', 'items-categories', 'items-bulk-price',
+        'quick-pos', 'standard-invoice', 'invoice-history',
+        'inventory-levels', 'inventory-logs'
+      ];
+    }
+    return ['dashboard'];
+  };
+
+  const allowedPermissions = getRolePermissions(currentUserRole);
+
+  const allowedMenuItems = menuItems.map(item => {
+    if (item.isSingle) {
+      if (!allowedPermissions.includes(item.id)) return null;
+      return item;
+    }
+    
+    // فیلتر کردن زیرمنوها بر اساس لیست فایروال سیستم دسترسی
+    const subFiltered = item.subMenus?.filter(sub => {
+      if (item.id === 'settings') {
+        return allowedPermissions.includes('settings');
+      }
+      return allowedPermissions.includes(sub.id);
+    });
+    
+    if (!subFiltered || subFiltered.length === 0) {
+      return null;
+    }
+    
+    return {
+      ...item,
+      subMenus: subFiltered
+    };
+  }).filter((item): item is NonNullable<typeof item> => item !== null);
 
   return (
     <aside className="w-72 bg-gradient-to-b from-slate-900 to-slate-950 text-slate-100 flex flex-col border-l border-slate-800 shadow-xl select-none" id="sidebar-container">
@@ -95,7 +183,7 @@ export default function Sidebar({ activeTab, onTabChange, lowStockCount }: Sideb
             ح
           </div>
           <div>
-            <h1 className="font-bold text-sm text-white tracking-wide">حسابداری فروشگاهی آریا</h1>
+            <h1 className="font-bold text-sm text-white tracking-wide">{storeName || 'حسابداری فروشگاهی آریا'}</h1>
             <span className="text-[10px] text-slate-400 font-mono">نسخه ۱۰۰٪ آفلاین</span>
           </div>
         </div>
@@ -104,7 +192,7 @@ export default function Sidebar({ activeTab, onTabChange, lowStockCount }: Sideb
 
       {/* لیست منوها با انیمیشن و رفتار دقیق آکاردئونی */}
       <div className="flex-1 overflow-y-auto px-3 py-4 space-y-1.5" id="sidebar-menu-list">
-        {menuItems.map((menu) => {
+        {allowedMenuItems.map((menu) => {
           const isSelectedParent = activeTab === menu.id || (menu.subMenus?.some(sub => sub.id === activeTab));
 
           if (menu.isSingle) {
@@ -170,7 +258,7 @@ export default function Sidebar({ activeTab, onTabChange, lowStockCount }: Sideb
                         className={`w-full text-right block px-3 py-2 rounded-lg text-xs transition-all duration-200 ${
                           isSubSelected
                             ? 'bg-gradient-to-r from-emerald-600 to-emerald-500 text-white font-medium shadow-md shadow-emerald-500/5'
-                            : sub.highlight
+                            : (sub as any).highlight
                               ? 'text-emerald-400 hover:bg-slate-800 hover:text-emerald-300 font-medium'
                               : 'text-slate-400 hover:bg-slate-800/40 hover:text-white'
                         }`}

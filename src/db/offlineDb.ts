@@ -1,4 +1,4 @@
-import { Person, Product, Service, Invoice, InvoiceItem, StockLog } from '../types';
+import { Person, Product, Service, Invoice, InvoiceItem, StockLog, Warehouse, Category } from '../types';
 import { databaseService } from '../database/databaseService';
 
 // CLASS ROUTING TO STANDARD DATABASE SERVICE
@@ -102,6 +102,45 @@ export class OfflineDatabase {
 
   static deleteUser(id: string) {
     return databaseService.deleteUser(id);
+  }
+
+  // --- Warehouses CRUD ---
+  static getWarehouses(): Warehouse[] {
+    return databaseService.getWarehouses();
+  }
+
+  static saveWarehouse(warehouse: Omit<Warehouse, 'id'> & { id?: string }): Warehouse {
+    return databaseService.saveWarehouse(warehouse);
+  }
+
+  static deleteWarehouse(id: string): boolean {
+    return databaseService.deleteWarehouse(id);
+  }
+
+  static addStockLog(
+    productId: string,
+    productTitle: string,
+    prev: number,
+    next: number,
+    reason: string,
+    warehouseId?: string,
+    warehouseName?: string,
+    operatorName?: string
+  ) {
+    databaseService.addStockLog(productId, productTitle, prev, next, reason, warehouseId, warehouseName, operatorName);
+  }
+
+  // --- Category CRUD operations ---
+  static getCategories(): Category[] {
+    return databaseService.getCategories();
+  }
+
+  static saveCategory(category: Omit<Category, 'id'> & { id?: string }): Category {
+    return databaseService.saveCategory(category);
+  }
+
+  static deleteCategory(id: string): boolean {
+    return databaseService.deleteCategory(id);
   }
 }
 

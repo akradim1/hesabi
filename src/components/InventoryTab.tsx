@@ -1,30 +1,56 @@
 import React, { useState, useEffect } from 'react';
 import { OfflineDatabase } from '../db/offlineDb';
-import { Product, StockLog } from '../types';
+import { Product, Warehouse } from '../types';
 import { 
   Boxes, 
   Search, 
   AlertTriangle, 
-  History, 
   Plus, 
   Minus, 
   CheckCircle, 
   ArrowRightLeft, 
   TrendingUp, 
-  DollarSign, 
-  BarChart4 
+  BarChart4,
+  Warehouse as WarehouseIcon,
+  X,
+  Edit,
+  MapPin,
+  ClipboardList
 } from 'lucide-react';
 
 export default function InventoryTab() {
   const [products, setProducts] = useState<Product[]>([]);
-  const [stockLogs, setStockLogs] = useState<StockLog[]>([]);
-  const [searchQuery, setSearchQuery] = useState('');
+  const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
+  
+  // Tab within inventory levels
+  const [activeSubTab, setActiveSubTab] = useState<'levels' | 'transfer' | 'warehouses'>('levels');
 
-  // تفکیک برای فرم ویرایش دستی موجودی (Stock correction)
-  const [selectedProductId, setSelectedProductId] = useState<string>('');
+  // Search and Warehouse selection context
+  const [searchQuery, setSearchQuery] = useState('');
+  const [selectedWarehouseFilter, setSelectedWarehouseFilter] = useState<string>('All');
+
+  // Manual Stock Correction state
+  const [selectedProductIdForAdjustment, setSelectedProductIdForAdjustment] = useState<string>('');
+  const [adjustWarehouseId, setAdjustWarehouseId] = useState<string>('wh_central');
   const [adjustQty, setAdjustQty] = useState<number>(1);
   const [adjustType, setAdjustType] = useState<'increase' | 'decrease'>('increase');
-  const [adjustReason, setAdjustReason] = useState('انبارگردانی سالانه و بازشماری');
+  const [adjustReason, setAdjustReason] = useState('انبارگردانی سالانه و بازشماری ممتد');
+
+  // Transfer stock state
+  const [transferProductId, setTransferProductId] = useState<string>('');
+  const [transferSourceWhId, setTransferSourceWhId] = useState<string>('wh_central');
+  const [transferDestWhId, setTransferDestWhId] = useState<string>('wh_store');
+  const [transferQty, setTransferQty] = useState<number>(1);
+  const [transferNotes, setTransferNotes] = useState('حواله انتقال بابت شارژ موجودی ویترین مغازه');
+
+  // Warehouse CRUD states
+  const [editingWh, setEditingWh] = useState<Warehouse | null>(null);
+  const [showWhModal, setShowWhModal] = useState(false);
+  const [whName, setWhName] = useState('');
+  const [whCode, setWhCode] = useState('');
+  const [whLocation, setWhLocation] = useState('');
+  const [whNotes, setWhNotes] = useState('');
+  const [whIsActive, setWhIsActive] = useState(true);
 
   useEffect(() => {
     refreshData();
@@ -32,314 +58,828 @@ export default function InventoryTab() {
 
   const refreshData = () => {
     setProducts(OfflineDatabase.getProducts());
-    setStockLogs(OfflineDatabase.getStockLogs());
+    setWarehouses(OfflineDatabase.getWarehouses());
   };
 
-  // ارسال فرم تعدیل دستی انبار
+  const getFarsiWarehouseName = (id: string) => {
+    const found = warehouses.find(w => w.id === id);
+    return found ? found.name : 'انبار نامشخص';
+  };
+
+  // Submit manual correction for a specific warehouse
   const handleStockAdjustment = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedProductId) return;
+    if (!selectedProductIdForAdjustment) return;
 
-    const originalProduct = products.find(p => p.id === selectedProductId);
+    const originalProduct = products.find(p => p.id === selectedProductIdForAdjustment);
     if (!originalProduct) return;
 
+    // Load active stocks
+    const stocks = originalProduct.warehouse_stocks || { wh_central: originalProduct.stock_quantity || 0 };
+    const currentWarehouseQty = stocks[adjustWarehouseId] || 0;
+    
     const delta = adjustType === 'increase' ? adjustQty : -adjustQty;
-    const previous_qty = originalProduct.stock_quantity;
-    const new_qty = Math.max(0, previous_qty + delta);
+    const previousWarehouseQty = currentWarehouseQty;
+    const newWarehouseQty = Math.max(0, currentWarehouseQty + delta);
 
-    // ذخیره کالا با تعداد جدید کالا
-    OfflineDatabase.saveProduct({
+    // Calc overall difference to adjust main stock_quantity
+    const diff = newWarehouseQty - previousWarehouseQty;
+
+    const updatedStocks = {
+      ...stocks,
+      [adjustWarehouseId]: newWarehouseQty
+    };
+
+    // Calculate total aggregated quantity across all warehouses
+    const newTotalQty = Object.values(updatedStocks).reduce((sum: number, qty: any) => sum + (qty || 0), 0) as number;
+
+    const updatedProductPayload = {
       ...originalProduct,
-      stock_quantity: new_qty
+      stock_quantity: newTotalQty,
+      warehouse_stocks: updatedStocks
+    };
+
+    // Save in Database
+    OfflineDatabase.saveProduct(updatedProductPayload);
+
+    // Save detailed audited stock log specifically detailing the warehouse change
+    const whName = getFarsiWarehouseName(adjustWarehouseId);
+    const actionText = adjustType === 'increase' ? 'ورود' : 'خروج/کسری';
+    const reasonText = `اصلاح موجودی دستی (${actionText}) - دپو: ${whName} - بابت: ${adjustReason}`;
+    
+    OfflineDatabase.addStockLog(
+      originalProduct.id,
+      originalProduct.title,
+      originalProduct.stock_quantity, // Overall previous
+      newTotalQty, // Overall new
+      reasonText,
+      adjustWarehouseId,
+      whName
+    );
+
+    // Reset Form
+    setSelectedProductIdForAdjustment('');
+    setAdjustQty(1);
+    setAdjustReason('انبارگردانی سالانه و بازشماری ممتد');
+    refreshData();
+    
+    // Dispatch custom update trigger
+    window.dispatchEvent(new Event('cofeclick_settings_updated'));
+  };
+
+  // Execute transfer of stock from Wh A to Wh B
+  const handleTransfer = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!transferProductId || !transferSourceWhId || !transferDestWhId) {
+      alert('لطفاً مشخصات حواله را کامل کنید.');
+      return;
+    }
+
+    if (transferSourceWhId === transferDestWhId) {
+      alert('انبار مبدا و مقصد نمی‌توانند یکسان باشند.');
+      return;
+    }
+
+    if (transferQty <= 0) {
+      alert('تعداد انتقال نامعتبر است.');
+      return;
+    }
+
+    const matchedProduct = products.find(p => p.id === transferProductId);
+    if (!matchedProduct) return;
+
+    const stocks = matchedProduct.warehouse_stocks || { wh_central: matchedProduct.stock_quantity || 0 };
+    const sourceQty = stocks[transferSourceWhId] || 0;
+
+    if (sourceQty < transferQty) {
+      alert(`موجودی کالا در ${getFarsiWarehouseName(transferSourceWhId)} کماکان برای این حواله کافی نمی‌باشد. (موجودی فعلی: ${sourceQty} عدد)`);
+      return;
+    }
+
+    // Deduct from source and add to destination
+    const destQty = stocks[transferDestWhId] || 0;
+    const updatedStocks = {
+      ...stocks,
+      [transferSourceWhId]: sourceQty - transferQty,
+      [transferDestWhId]: destQty + transferQty
+    };
+
+    // Recalculate aggregated total quantity
+    const finalTotalQty = Object.values(updatedStocks).reduce((sum: number, q: any) => sum + (q || 0), 0) as number;
+
+    const updatedPayload = {
+      ...matchedProduct,
+      stock_quantity: finalTotalQty,
+      warehouse_stocks: updatedStocks
+    };
+
+    // Save product specs
+    OfflineDatabase.saveProduct(updatedPayload);
+
+    // Create log detailing the move
+    const srcName = getFarsiWarehouseName(transferSourceWhId);
+    const destName = getFarsiWarehouseName(transferDestWhId);
+    const transferAuditReason = `حواله جابجایی کالا: انتقال تعداد ${transferQty} عدد مابین ${srcName} به ${destName} - بابت: ${transferNotes}`;
+
+    OfflineDatabase.addStockLog(
+      matchedProduct.id,
+      matchedProduct.title,
+      matchedProduct.stock_quantity,
+      finalTotalQty, // Aggregated total unchanged physically but tracked
+      transferAuditReason,
+      transferSourceWhId,
+      srcName
+    );
+
+    // Reset Transfer form
+    setTransferProductId('');
+    setTransferQty(1);
+    setTransferNotes('حواله انتقال بابت شارژ موجودی ویترین مغازه');
+    alert('حواله انتقال فیزیکی مابین انبارها با موفقیت صادر و ثبت شد.');
+    refreshData();
+    window.dispatchEvent(new Event('cofeclick_settings_updated'));
+  };
+
+  // Submit Warehouse Profile CRUD
+  const handleSaveWarehouseSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!whName.trim() || !whCode.trim()) return;
+
+    OfflineDatabase.saveWarehouse({
+      id: editingWh?.id || undefined,
+      name: whName.trim(),
+      code: whCode.trim().toUpperCase(),
+      location: whLocation.trim(),
+      notes: whNotes.trim(),
+      isActive: whIsActive
     });
 
-    // احیای مقادیر فرم
-    setSelectedProductId('');
-    setAdjustQty(1);
-    setAdjustReason('انبارگردانی سالانه و بازشماری');
+    setEditingWh(null);
+    setWhName('');
+    setWhCode('');
+    setWhLocation('');
+    setWhNotes('');
+    setWhIsActive(true);
+    setShowWhModal(false);
     refreshData();
+    alert('اطلاعات انبار (دپو) با موفقیت در سیستم پایدارسازی شد.');
+  };
+
+  const startEditWarehouse = (wh: Warehouse) => {
+    setEditingWh(wh);
+    setWhName(wh.name);
+    setWhCode(wh.code);
+    setWhLocation(wh.location || '');
+    setWhNotes(wh.notes || '');
+    setWhIsActive(wh.isActive);
+    setShowWhModal(true);
+  };
+
+  const handleDeleteWarehouse = (id: string) => {
+    if (id === 'wh_central' || id === 'wh_store') {
+      alert('امکان حذف انبارهای پیش‌فرض و سیستمی وجود ندارد.');
+      return;
+    }
+
+    if (confirm('آیا از حذف این انبار دپو اطمینان دارید؟ با حذف این انبار، سوابق فیزیکی و مقادیر ست شده بر پایه آن به بخش تعلیق انتقال می‌یابد.')) {
+      const ok = OfflineDatabase.deleteWarehouse(id);
+      if (ok) {
+        refreshData();
+        alert('انبار با موفقیت حذف شد.');
+      }
+    }
   };
 
   const formatToman = (val: number) => {
     return val.toLocaleString('fa-IR') + ' تومان';
   };
 
-  // آمار کل انبار
-  const totalItemsCount = products.reduce((sum, p) => sum + p.stock_quantity, 0);
-  const lowStockProducts = products.filter(p => p.stock_quantity <= 10);
-  const totalAssetsValuePurchase = products.reduce((sum, p) => sum + (p.purchase_price * p.stock_quantity), 0);
-  const totalAssetsValueSale = products.reduce((sum, p) => sum + (p.sale_price * p.stock_quantity), 0);
-  const expectedProfitMargin = totalAssetsValueSale - totalAssetsValuePurchase;
+  // Aggregated calculations based on filtered warehouse stock context!
+  const getProductQtyInContext = (p: Product, warehouseId: string) => {
+    if (warehouseId === 'All') {
+      return p.stock_quantity;
+    }
+    const stocks = p.warehouse_stocks || { wh_central: p.stock_quantity || 0 };
+    return stocks[warehouseId] || 0;
+  };
+
+  // Calculate totals matching selected warehouse filter context!
+  const currentTotalItemsCount = products.reduce((sum, p) => sum + getProductQtyInContext(p, selectedWarehouseFilter), 0);
+  const lowStockProductsCount = products.filter(p => getProductQtyInContext(p, selectedWarehouseFilter) <= 10).length;
+  const currentAssetsValuePurchase = products.reduce((sum, p) => sum + (p.purchase_price * getProductQtyInContext(p, selectedWarehouseFilter)), 0);
+  const currentAssetsValueSale = products.reduce((sum, p) => sum + (p.sale_price * getProductQtyInContext(p, selectedWarehouseFilter)), 0);
+  const currentExpectedProfit = currentAssetsValueSale - currentAssetsValuePurchase;
 
   const filteredProducts = products.filter(p => p.title.includes(searchQuery) || p.barcode.includes(searchQuery));
 
   return (
-    <div className="p-6 h-[calc(100vh-64px)] overflow-y-auto" id="inventory-tab-container">
+    <div className="p-6 h-[calc(100vh-64px)] overflow-y-auto space-y-6 bg-slate-50 select-none" id="inventory-pane-master">
       
-      {/* هدر: ویجت‌ها و آمار ارزش‌گذاری انبار مغازه (Warehouse Assets Analytics) */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6" id="warehouse-analytics-cards">
-        
-        <div className="bg-white rounded-2xl border border-slate-200/80 p-4 shadow-sm flex items-center gap-4.5">
-          <div className="p-3 rounded-2xl bg-blue-50 text-blue-600">
-            <Boxes className="w-5 h-5" />
-          </div>
-          <div>
-            <span className="text-[10.5px] text-slate-400 block font-medium">کل اقلام موجود در انبار:</span>
-            <span className="text-base font-extrabold text-slate-800 font-mono">{totalItemsCount.toLocaleString('fa-IR')} قلم کالا</span>
-          </div>
+      {/* هدر بالایی صفحه */}
+      <div className="bg-white rounded-3xl p-5 border border-slate-200/80 shadow-[0_2px_8px_-3px_rgba(0,0,0,0.05)] flex flex-col md:flex-row justify-between items-start md:items-center gap-4" id="inv-panel-header">
+        <div className="space-y-1 text-right">
+          <span className="text-[10px] uppercase font-bold text-indigo-650 bg-indigo-50 px-2.5 py-1 rounded-full border border-indigo-100 inline-flex items-center gap-1 font-mono">
+            <Boxes className="w-3.5 h-3.5" /> Modern multi-depot grid system
+          </span>
+          <h2 className="text-lg font-black text-slate-800">کنترل موجودی انبار و سازماندهی دپوهای آریا</h2>
+          <p className="text-xs text-slate-500 font-sans font-medium">
+            تخصیص مجزای کالاها مابین انبارهای فیزیکی، ممیزی مغایرت‌های کاتالوگ و صدور حواله‌های رسمی ترخیص کالا
+          </p>
         </div>
 
-        <div className="bg-white rounded-2xl border border-slate-200/80 p-4 shadow-sm flex items-center gap-4.5">
-          <div className="p-3 rounded-2xl bg-red-50 text-red-500 animate-pulse">
-            <AlertTriangle className="w-5 h-5" />
-          </div>
-          <div>
-            <span className="text-[10.5px] text-slate-400 block font-medium">کالاهای رو به اتمام (زیر ۱۰ عدد):</span>
-            <span className="text-base font-extrabold text-red-500 font-mono">{lowStockProducts.length} کالا بحرانی</span>
-          </div>
+        <div className="flex flex-wrap gap-2 self-stretch md:self-auto">
+          <button
+            onClick={() => {
+              setEditingWh(null);
+              setWhName('');
+              setWhCode('');
+              setWhLocation('');
+              setWhNotes('');
+              setWhIsActive(true);
+              setShowWhModal(true);
+            }}
+            className="flex-1 md:flex-initial py-2 px-4 bg-indigo-650 hover:bg-indigo-700 text-white font-extrabold text-xs rounded-xl shadow-sm transition flex items-center justify-center gap-1.5 cursor-pointer"
+          >
+            <Plus className="w-4 h-4" />
+            افزودن آدرس انبار جدید
+          </button>
         </div>
-
-        <div className="bg-white rounded-2xl border border-slate-200/80 p-4 shadow-sm flex items-center gap-4.5">
-          <div className="p-3 rounded-2xl bg-emerald-50 text-emerald-600">
-            <BarChart4 className="w-5 h-5" />
-          </div>
-          <div>
-            <span className="text-[10.5px] text-slate-400 block font-medium">ارزش سرمایه انبار (قیمت خرید):</span>
-            <span className="text-xs font-bold text-slate-700 font-mono block mt-0.5">{formatToman(totalAssetsValuePurchase)}</span>
-          </div>
-        </div>
-
-        <div className="bg-white rounded-2xl border border-slate-200/80 p-4 shadow-sm flex items-center gap-4.5">
-          <div className="p-3 rounded-2xl bg-indigo-50 text-indigo-600">
-            <TrendingUp className="w-5 h-5" />
-          </div>
-          <div>
-            <span className="text-[10.5px] text-slate-400 block font-medium">سود ناخالص نهایی متصور مغازه:</span>
-            <span className="text-xs font-bold text-indigo-600 font-mono block mt-0.5">+{formatToman(expectedProfitMargin)}</span>
-          </div>
-        </div>
-
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6" id="inventory-grid-splits">
+      {/* ناوبری دپارتمان تبرک‌ها */}
+      <div className="flex border-b border-slate-205 pb-0.5 gap-2" id="inv-subtab-navigation">
+        <button
+          onClick={() => setActiveSubTab('levels')}
+          className={`px-5 py-2.5 font-extrabold text-xs transition border-b-2 rounded-t-lg ${
+            activeSubTab === 'levels' 
+              ? 'border-indigo-505 border-indigo-600 text-indigo-705 text-indigo-600 bg-white shadow-3xs font-black' 
+              : 'border-transparent text-slate-500 hover:text-slate-800 hover:bg-slate-100/50'
+          }`}
+        >
+          <div className="flex items-center gap-1.5">
+            <Boxes className="w-4 h-4" />
+            سطوح تفصیلی موجودی انبارها ({filteredProducts.length} ردیف کالا)
+          </div>
+        </button>
         
-        {/* ستون راست و وسط: پایش موجودی و فرم تعدیل دستی */}
-        <div className="lg:col-span-2 space-y-6" id="inventory-main-flows">
+        <button
+          onClick={() => setActiveSubTab('transfer')}
+          className={`px-5 py-2.5 font-extrabold text-xs transition border-b-2 rounded-t-lg ${
+            activeSubTab === 'transfer' 
+              ? 'border-indigo-505 border-indigo-600 text-indigo-705 text-indigo-600 bg-white shadow-3xs font-black' 
+              : 'border-transparent text-slate-500 hover:text-slate-800 hover:bg-slate-100/50'
+          }`}
+        >
+          <div className="flex items-center gap-1.5">
+            <ArrowRightLeft className="w-4 h-4" />
+            صدور حواله انتقال بین انبارها
+          </div>
+        </button>
+
+        <button
+          onClick={() => setActiveSubTab('warehouses')}
+          className={`px-5 py-2.5 font-extrabold text-xs transition border-b-2 rounded-t-lg ${
+            activeSubTab === 'warehouses' 
+              ? 'border-indigo-505 border-indigo-600 text-indigo-705 text-indigo-600 bg-white shadow-3xs font-black' 
+              : 'border-transparent text-slate-500 hover:text-slate-800 hover:bg-slate-100/50'
+          }`}
+        >
+          <div className="flex items-center gap-1.5">
+            <WarehouseIcon className="w-4 h-4" />
+            سازماندهی شعب و انبارهای فیزیکی ({warehouses.length} آدرس دپو)
+          </div>
+        </button>
+      </div>
+
+      {/* ۱. تب اول: سطوح تفصیلی موجودی */}
+      {activeSubTab === 'levels' && (
+        <div className="space-y-6 animate-fade-in" id="inventory-levels-view">
           
-          {/* لیست موجودی انبار */}
-          <div className="bg-white rounded-2xl border border-slate-200/80 p-5 shadow-sm" id="stock-levels-box">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
-              <div>
-                <h3 className="font-bold text-xs text-slate-800">بررسی سطح کیفی موجودی کالاها</h3>
-                <p className="text-[10px] text-slate-400">امکان فیلتر و ردگیری سریع کسری کالاها</p>
+          {/* بخش آمار بالایی فیلتر شده بر اساس کانتکست انبار */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4" id="filtered-warehouse-stats">
+            <div className="bg-white p-4.5 rounded-2xl border border-slate-200/80 flex justify-between items-center shadow-3xs">
+              <div className="space-y-1">
+                <span className="text-[10px] font-bold text-slate-400 block">اقلام کلی موجود در فیلتر:</span>
+                <strong className="text-base font-black text-slate-800 block font-mono">
+                  {currentTotalItemsCount.toLocaleString('fa-IR')} قلم کالا
+                </strong>
+                <span className="text-[9px] text-slate-450 block font-normal">بر مبنای انبار انتخابی فعلی شما</span>
+              </div>
+              <div className="p-3 bg-indigo-50 text-indigo-600 rounded-xl">
+                <Boxes className="w-5 h-5" />
+              </div>
+            </div>
+
+            <div className="bg-white p-4.5 rounded-2xl border border-slate-200/80 flex justify-between items-center shadow-3xs">
+              <div className="space-y-1">
+                <span className="text-[10px] font-bold text-slate-400 block">کالاهای بحرانی حاضر (کمتر از ۱۰ عدد):</span>
+                <strong className="text-base font-black text-amber-600 block font-mono">
+                  {lowStockProductsCount} ردیف قطعات
+                </strong>
+                <span className="text-[9px] text-slate-450 block font-normal">نیازمند شارژ متمم فیزیکی سریع دپو</span>
+              </div>
+              <div className="p-3 bg-amber-50 text-amber-600 rounded-xl">
+                <AlertTriangle className="w-5 h-5" />
+              </div>
+            </div>
+
+            <div className="bg-white p-4.5 rounded-2xl border border-slate-200/80 flex justify-between items-center shadow-3xs">
+              <div className="space-y-1">
+                <span className="text-[10px] font-bold text-slate-400 block">ارزش بهای دارایی فیزیکی (خرید):</span>
+                <strong className="text-base font-black text-teal-650 block font-mono">
+                  {currentAssetsValuePurchase.toLocaleString('fa-IR')} T
+                </strong>
+                <span className="text-[9px] text-slate-450 block font-normal">کل هزینه کرد مالی انباشته کالاها</span>
+              </div>
+              <div className="p-3 bg-teal-50 text-teal-600 rounded-xl">
+                <BarChart4 className="w-5 h-5" />
+              </div>
+            </div>
+
+            <div className="bg-white p-4.5 rounded-2xl border border-slate-200/80 flex justify-between items-center shadow-3xs">
+              <div className="space-y-1">
+                <span className="text-[10px] font-bold text-slate-400 block">برآورد حاشیه سود متصور:</span>
+                <strong className="text-base font-black text-rose-600 block font-mono">
+                  {currentExpectedProfit.toLocaleString('fa-IR')} T
+                </strong>
+                <span className="text-[9px] text-slate-450 block font-normal">مربوط به انبارداری و تراز خرده‌فروشی</span>
+              </div>
+              <div className="p-3 bg-rose-50 text-rose-600 rounded-xl">
+                <TrendingUp className="w-5 h-5" />
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-white rounded-2xl border border-slate-200/80 p-5 shadow-sm space-y-4" id="inv-levels-topbar">
+            <div className="grid grid-cols-1 md:grid-cols-12 gap-4 items-center">
+              
+              {/* کادر سرچ کاتالوگ */}
+              <div className="md:col-span-6 space-y-1">
+                <label className="block text-[11px] font-bold text-slate-500">جستجوی کالا بر پایه عنوان یا بارکد:</label>
+                <div className="relative">
+                  <Search className="absolute right-3 top-2.5 w-4 h-4 text-slate-400" />
+                  <input
+                    type="text"
+                    value={searchQuery}
+                    onChange={e => setSearchQuery(e.target.value)}
+                    placeholder="مثلاً چای سیاه، کاله، فاکتور، بارکد..."
+                    className="w-full pr-10 pl-3 py-2 border border-slate-200 rounded-xl text-xs focus:outline-indigo-500 bg-slate-50/50"
+                  />
+                </div>
               </div>
 
-              {/* جستجو کاتالوگ انبار */}
-              <div className="relative w-full sm:w-52">
-                <Search className="w-3.5 h-3.5 text-slate-400 absolute right-2.5 top-2.5" />
+              {/* کادر سلکت کانتکست انبار */}
+              <div className="md:col-span-6 space-y-1">
+                <label className="block text-[11px] font-bold text-indigo-700 font-sans">انتخاب و بررسی تفکیکی دپوی انبارگاه:</label>
+                <select
+                  value={selectedWarehouseFilter}
+                  onChange={e => setSelectedWarehouseFilter(e.target.value)}
+                  className="w-full p-2.5 border border-indigo-200 rounded-xl bg-indigo-50/20 text-xs text-indigo-900 font-black"
+                >
+                  <option value="All">نمایش تجمیعی کل موجودی (همگی انبارها)</option>
+                  {warehouses.map(wh => (
+                    <option key={wh.id} value={wh.id}>{wh.name} ({wh.code})</option>
+                  ))}
+                </select>
+              </div>
+
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+            
+            {/* جدول نمایش موجودی */}
+            <div className="lg:col-span-8 bg-white border border-slate-200 p-5 rounded-3xl shadow-3xs space-y-4" id="products-multi-wh-table-card">
+              <h3 className="font-extrabold text-xs text-slate-800 border-b border-slate-100 pb-2">
+                لیست کاتالوگ و توزیع ذخیره کالایی
+                <span className="text-[10px] text-slate-450 mr-2 font-normal font-sans">
+                  (محاسبه بر اساس انبار: {selectedWarehouseFilter === 'All' ? 'همگی انبارها' : getFarsiWarehouseName(selectedWarehouseFilter)})
+                </span>
+              </h3>
+
+              <div className="overflow-x-auto text-[11px]" id="levels-tbl-contextual">
+                <table className="w-full text-right border-collapse">
+                  <thead>
+                    <tr className="bg-slate-50 text-slate-550 h-9 font-bold border-b border-slate-200">
+                      <th className="p-2 w-12 text-center">ردیف</th>
+                      <th className="p-2">عنوان کالا</th>
+                      <th className="p-2 text-center">بارکد</th>
+                      <th className="p-2 text-left">ارزش خرید (T)</th>
+                      <th className="p-2 text-left">ارزش فروش (T)</th>
+                      <th className="p-2 text-left font-black text-indigo-700">موجودی انبار هدف</th>
+                      <th className="p-2 text-center w-12">اصلاح</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {filteredProducts.map((p, idx) => {
+                      const qty = getProductQtyInContext(p, selectedWarehouseFilter);
+                      const isOutOfStock = qty <= 0;
+                      const isLow = qty <= 10;
+                      
+                      return (
+                        <tr key={p.id} className="hover:bg-slate-50/50 h-11 text-slate-800">
+                          <td className="p-2 text-center font-mono text-slate-400">{idx + 1}</td>
+                          <td className="p-2 font-extrabold text-slate-900">{p.title}</td>
+                          <td className="p-2 text-center font-mono text-slate-400">{p.barcode || '---'}</td>
+                          <td className="p-2 text-left font-mono">{p.purchase_price.toLocaleString('fa-IR')}</td>
+                          <td className="p-2 text-left font-mono font-semibold">{p.sale_price.toLocaleString('fa-IR')}</td>
+                          <td className="p-2 text-left font-mono">
+                            <span className={`px-2.5 py-1 rounded-lg font-black text-xs ${
+                              isOutOfStock 
+                                ? 'bg-rose-50 text-rose-700 border border-rose-200' 
+                                : isLow 
+                                  ? 'bg-amber-50 text-amber-700 border border-amber-200 font-bold' 
+                                  : 'bg-emerald-50 text-emerald-700 border border-emerald-250 font-black'
+                            }`}>
+                              {qty} {p.unit}
+                            </span>
+                          </td>
+                          <td className="p-2 text-center">
+                            <button
+                              onClick={() => {
+                                setSelectedProductIdForAdjustment(p.id);
+                                setAdjustWarehouseId(selectedWarehouseFilter === 'All' ? 'wh_central' : selectedWarehouseFilter);
+                                setAdjustQty(1);
+                              }}
+                              className="text-indigo-650 hover:text-indigo-800 font-extrabold hover:underline cursor-pointer"
+                            >
+                              کالیبره
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                    {filteredProducts.length === 0 && (
+                      <tr>
+                        <td colSpan={7} className="p-12 text-center text-slate-400 italic">
+                          هیچ کالایی متناسب با واژه سرچ کارتابل یافت نگردید.
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* ساید اینپوت: فرم تعدیل دستی یک کالا در انبار انتخابی */}
+            <div className="lg:col-span-4 space-y-6" id="inventory-correction-form-pane">
+              {selectedProductIdForAdjustment ? (
+                <div className="bg-white rounded-3xl border border-indigo-200 p-5 shadow-sm space-y-4 animate-fade-in">
+                  <div className="flex justify-between items-center border-b border-indigo-100 pb-2">
+                    <h4 className="font-extrabold text-xs text-indigo-900 flex items-center gap-1.5">
+                      <ClipboardList className="w-4.5 h-4.5" />کالیبراسیون و اصلاح مستقل انبار
+                    </h4>
+                    <button 
+                      onClick={() => setSelectedProductIdForAdjustment('')}
+                      className="text-slate-400 hover:text-red-500 font-bold text-xs"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+
+                  <form onSubmit={handleStockAdjustment} className="space-y-4 text-xs text-right">
+                    <div className="bg-indigo-50/60 p-3 rounded-2xl border border-indigo-100">
+                      <span className="text-[9.5px] text-indigo-550 block font-normal">کالای انتخابی جهت تعدیل:</span>
+                      <strong className="text-xs font-black text-indigo-900 block mt-1">
+                        {products.find(p => p.id === selectedProductIdForAdjustment)?.title}
+                      </strong>
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-550 mb-1">انبار فیزیکی هدف جهت اعمال:</label>
+                      <select
+                        value={adjustWarehouseId}
+                        onChange={e => setAdjustWarehouseId(e.target.value)}
+                        className="w-full p-2 border border-slate-200 rounded-xl bg-slate-50 text-xs text-slate-700 font-bold"
+                      >
+                        {warehouses.map(wh => (
+                          <option key={wh.id} value={wh.id}>{wh.name} ({wh.code})</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-550 mb-1">نوع ممیزی تعدیل:</label>
+                      <div className="flex bg-slate-150 p-1 rounded-xl">
+                        <button
+                          type="button"
+                          onClick={() => setAdjustType('increase')}
+                          className={`flex-1 py-1.8 rounded-lg text-[10px] font-black transition ${
+                            adjustType === 'increase' ? 'bg-indigo-650 text-white shadow-xs' : 'text-slate-500 hover:text-slate-800'
+                          }`}
+                        >
+                          افزایش (اموال تازه / ورود)
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setAdjustType('decrease')}
+                          className={`flex-1 py-1.8 rounded-lg text-[10px] font-black transition ${
+                            adjustType === 'decrease' ? 'bg-indigo-650 text-white shadow-xs' : 'text-slate-500 hover:text-slate-800'
+                          }`}
+                        >
+                          کاهش (مغایرت/کسری/خرابی)
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-[11px] font-bold text-slate-550 mb-1">میزان تعداد:</label>
+                        <input
+                          type="number"
+                          min="1"
+                          required
+                          value={adjustQty}
+                          onChange={e => setAdjustQty(Number(e.target.value))}
+                          className="w-full text-xs p-2 bg-slate-50 border border-slate-200 rounded-lg text-left font-mono"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-[11px] font-bold text-slate-550 mb-1">جهت توجیه تعدیل:</label>
+                        <select
+                          value={adjustReason}
+                          onChange={e => setAdjustReason(e.target.value)}
+                          className="w-full text-[10px] p-2 bg-slate-50 border border-slate-200 rounded-lg text-slate-750 font-bold"
+                        >
+                          <option value="انبارگردانی سالانه و بازشماری ممتد">بازشماری رسمی انبار</option>
+                          <option value="ضایعات کالا، تخریب بار و تاریخ گذشته">تخریب، ضایعات و فساد</option>
+                          <option value="سرقت یا مفقودی قطعات دپو">کسری مفقودی یا سرقت</option>
+                          <option value="برگشت از فروش مشتری و عودت کالا">تعدیل برگشت کالا فیزیکی</option>
+                        </select>
+                      </div>
+                    </div>
+
+                    <button
+                      type="submit"
+                      className="w-full py-2.5 bg-indigo-650 hover:bg-indigo-700 text-white font-extrabold text-xs rounded-xl shadow-md transition cursor-pointer"
+                    >
+                      ثبت اصلاحیه و ممیزی موجودی 💾
+                    </button>
+                  </form>
+                </div>
+              ) : (
+                <div className="bg-slate-100 rounded-3xl border border-dashed border-slate-250 p-6 text-center text-slate-450 space-y-2">
+                  <ClipboardList className="w-8 h-8 text-slate-350 mx-auto" />
+                  <p className="text-xs font-bold text-slate-600">کارگزینی کالیبراسیون و اصلاح دستی موجودی</p>
+                  <p className="text-[10px] text-slate-400 font-sans leading-relaxed">
+                    جهت اعمال مغایرت انبارگردانی برای یک کالا در دپوی خاص، بر روی دکمه «کالیبره» در جدول موجودی روبرو کلیک کنید تا پنل ویرایش باز شود.
+                  </p>
+                </div>
+              )}
+            </div>
+
+          </div>
+
+        </div>
+      )}
+
+      {/* ۲. تب دوم: حواله جابجایی مابین دپوها */}
+      {activeSubTab === 'transfer' && (
+        <div className="bg-white rounded-3xl border border-slate-200/80 p-6 shadow-sm space-y-6 max-w-2xl mx-auto text-right animate-fade-in" id="inter-depot-transfer">
+          <div className="border-b border-slate-100 pb-3 flex items-center gap-2">
+            <ArrowRightLeft className="w-6 h-6 text-indigo-650" />
+            <div>
+              <h3 className="font-extrabold text-sm text-slate-800">حواله رسمی نقل‌وانتقال متمم کالا بومی</h3>
+              <p className="text-[10.5px] text-slate-400">جابجایی کانتکست بین انبارهای توزیع به ویترین جلویی با حفظ لاگ و مسئول تراکنش</p>
+            </div>
+          </div>
+
+          <form onSubmit={handleTransfer} className="space-y-4 text-xs">
+            
+            <div className="space-y-1">
+              <label className="block text-[11px] font-bold text-slate-600">۱. محصول مورد نظر جهت جابجایی دپو:</label>
+              <select
+                required
+                value={transferProductId}
+                onChange={e => setTransferProductId(e.target.value)}
+                className="w-full p-3 border border-slate-200 rounded-xl bg-slate-50 text-slate-800 font-bold"
+              >
+                <option value="">-- انتخاب کالا از کاتالوگ فروشگاه --</option>
+                {products.map(p => (
+                  <option key={p.id} value={p.id}>
+                    {p.title} (کل کارتن‌های دپو: {p.stock_quantity} {p.unit})
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="space-y-1">
+                <label className="block text-[11px] font-bold text-slate-600">۲. انبار فیزیکی مبدا (دپوی کسر کالا):</label>
+                <select
+                  value={transferSourceWhId}
+                  onChange={e => setTransferSourceWhId(e.target.value)}
+                  className="w-full p-2.5 border border-slate-200 rounded-xl bg-slate-50 font-bold"
+                >
+                  {warehouses.map(wh => (
+                    <option key={wh.id} value={wh.id}>{wh.name} ({wh.code})</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="space-y-1">
+                <label className="block text-[11px] font-bold text-slate-600">۳. انبار فیزیکی مقصد (دپوی ورود کالا):</label>
+                <select
+                  value={transferDestWhId}
+                  onChange={e => setTransferDestWhId(e.target.value)}
+                  className="w-full p-2.5 border border-slate-200 rounded-xl bg-slate-50 font-bold"
+                >
+                  {warehouses.map(wh => (
+                    <option key={wh.id} value={wh.id}>{wh.name} ({wh.code})</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="space-y-1">
+                <label className="block text-[11px] font-bold text-slate-600">۴. تعداد فیزیکی جهت حواله:</label>
                 <input
-                  id="inventory-search-box"
+                  type="number"
+                  min="1"
+                  required
+                  value={transferQty}
+                  onChange={e => setTransferQty(Number(e.target.value))}
+                  className="w-full p-2.5 border border-slate-200 rounded-xl bg-slate-50 text-left font-mono focus:outline-indigo-500"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label className="block text-[11px] font-bold text-slate-600 font-sans">بابت توجیه حواله انتقال:</label>
+                <input
                   type="text"
-                  value={searchQuery}
-                  onChange={e => setSearchQuery(e.target.value)}
-                  placeholder="جستجو کالا در انبار..."
-                  className="w-full text-xs pr-7 pl-3 py-1.8 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none"
+                  required
+                  value={transferNotes}
+                  onChange={e => setTransferNotes(e.target.value)}
+                  placeholder="شارژ قفسه‌های صنف پوز..."
+                  className="w-full p-2.5 border border-slate-200 rounded-xl bg-slate-50 focus:outline-indigo-500"
                 />
               </div>
             </div>
 
-            <div className="overflow-x-auto text-xs" id="levels-table-holder">
-              <table className="w-full border-collapse" id="levels-table">
-                <thead>
-                  <tr className="border-b border-slate-100 bg-slate-50 text-slate-500 font-bold text-right leading-loose">
-                    <th className="py-2.5 px-3">بارکد</th>
-                    <th className="py-2.5 px-3">عنوان کالا کاتالوگ</th>
-                    <th className="py-2.5 px-3 text-left">قیمت خرید (T)</th>
-                    <th className="py-2.5 px-3 text-left">قیمت فروش (T)</th>
-                    <th className="py-2.5 px-3 text-left">موجودی انبار</th>
-                    <th className="py-2.5 px-3 text-center">وضعیت سطح</th>
-                    <th className="py-2.5 px-3 text-center">تعدیل دستی</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {filteredProducts.map(p => {
-                    const isOutOfStock = p.stock_quantity <= 0;
-                    const isCritical = p.stock_quantity <= 10;
-                    
-                    return (
-                      <tr key={p.id} id={`stock-row-${p.id}`} className="border-b border-slate-50 hover:bg-slate-50/50 text-slate-800">
-                        <td className="py-3 px-3 font-mono text-slate-400 text-[10.5px]">{p.barcode || 'فاقد بارکد'}</td>
-                        <td className="py-3 px-3 font-bold text-slate-900">{p.title}</td>
-                        <td className="py-3 px-3 text-left font-mono text-slate-500">{p.purchase_price.toLocaleString('fa-IR')}</td>
-                        <td className="py-3 px-3 text-left font-mono font-semibold text-slate-700">{p.sale_price.toLocaleString('fa-IR')}</td>
-                        <td className="py-3 px-3 text-left font-mono font-bold text-slate-900">
-                          {p.stock_quantity} {p.unit}
-                        </td>
-                        <td className="py-3 px-3 text-center">
-                          <span className={`px-2 py-0.5 rounded text-[9.5px] font-bold ${
-                            isOutOfStock 
-                              ? 'bg-red-50 text-red-500 animated-pulse' 
-                              : isCritical 
-                                ? 'bg-amber-50 text-amber-600' 
-                                : 'bg-emerald-50 text-emerald-600'
-                          }`}>
-                            {isOutOfStock ? 'عدم موجودی' : isCritical ? 'بحرانی (کاهش یافته)' : 'کافی و پایدار'}
-                          </span>
-                        </td>
-                        <td className="py-3 px-3 text-center">
-                          <button
-                            id={`correction-trigger-${p.id}`}
-                            onClick={() => {
-                              setSelectedProductId(p.id);
-                              setAdjustQty(1);
-                            }}
-                            className="text-[10px] text-indigo-600 hover:underline hover:text-indigo-800 font-bold"
-                          >
-                            تعدیل تعداد
-                          </button>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
+            <div className="bg-indigo-50 border border-indigo-100 p-4 rounded-2xl text-[11px] text-indigo-800 leading-relaxed font-sans font-medium space-y-1">
+              <strong className="text-indigo-950 font-black block text-xs">قوانین و تراز فرآیندهای انتقال:</strong>
+              <p>۱. سیستم کلاک فعال حسابرسی، صحت ترخیص از انبار صنف دپوی مبدا را قبل از انتقال سنجیده و در صورت کمبود مقدار، انتقال منقضی می‌گردد.</p>
+              <p>۲. ثبت تراکنش با برچسب انتقال دپو به صورت مجزا در بخش «بایگانی تراکنش‌های انباردار» درج می‌شود.</p>
             </div>
+
+            <button
+              type="submit"
+              className="w-full py-3 bg-indigo-650 hover:bg-indigo-700 text-white font-extrabold text-xs rounded-xl shadow-md transition cursor-pointer"
+            >
+              ثبت حواله قطعی انتقال دپو و موازنه فیزیکی 🔗
+            </button>
+            
+          </form>
+        </div>
+      )}
+
+      {/* ۳. تب سوم: سازماندهی شعب و دپوها */}
+      {activeSubTab === 'warehouses' && (
+        <div className="space-y-6 animate-fade-in" id="warehouses-profile-vault">
+          
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4" id="warehouses-grid">
+            {warehouses.map(wh => (
+              <div key={wh.id} className="bg-white border border-slate-200 rounded-2xl p-5 hover:border-indigo-500 transition relative flex flex-col justify-between" id={`wh-card-${wh.id}`}>
+                <div className="space-y-3">
+                  <div className="flex justify-between items-start">
+                    <div className="space-y-0.5">
+                      <span className="text-[10px] font-mono text-indigo-600 font-bold bg-indigo-50 px-2 py-0.5 rounded border border-indigo-100">
+                        کد شعبه: {wh.code}
+                      </span>
+                      <strong className="text-sm font-black text-slate-800 block mt-1.5">{wh.name}</strong>
+                    </div>
+                    {wh.id === 'wh_central' || wh.id === 'wh_store' ? (
+                      <span className="text-[9px] bg-slate-100 text-slate-600 border border-slate-200 font-bold px-1.5 py-0.5 rounded">
+                        انبار پیش‌فرض سیستم 🔒
+                      </span>
+                    ) : (
+                      <span className="text-[9px] bg-sky-50 text-sky-700 border border-sky-200 font-bold px-1.5 py-0.5 rounded">
+                        انبار افزوده جانبی 📦
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="space-y-1.5 text-[10.5px] text-slate-605">
+                    <div className="flex items-center gap-1">
+                      <MapPin className="w-3.5 h-3.5 text-slate-400" />
+                      <span><strong>آدرس دپو:</strong> {wh.location || 'فاقد لوکیشن ثبت شده'}</span>
+                    </div>
+                    <p className="text-[10px] text-slate-400 leading-snug bg-slate-50 p-2 rounded-xl">
+                      <strong>توضیحات سازماندهی:</strong> {wh.notes || 'فاقد یادداشت توضیحی متمم.'}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="mt-4 pt-3 border-t border-slate-100 flex justify-end gap-2 text-[10px]">
+                  <button
+                    onClick={() => startEditWarehouse(wh)}
+                    className="px-3 py-1.5 border border-slate-200 hover:border-indigo-500 text-slate-500 hover:text-indigo-600 rounded-lg cursor-pointer bg-white flex items-center gap-1 font-bold shadow-3xs"
+                  >
+                    <Edit className="w-3.5 h-3.5" />
+                    ویرایش پرونده انبار
+                  </button>
+                  {wh.id !== 'wh_central' && wh.id !== 'wh_store' && (
+                    <button
+                      onClick={() => handleDeleteWarehouse(wh.id)}
+                      className="px-3 py-1.5 border border-slate-200 hover:border-red-500 hover:bg-neutral-50 text-slate-500 hover:text-red-600 rounded-lg cursor-pointer bg-white font-bold"
+                    >
+                      حذف
+                    </button>
+                  )}
+                </div>
+              </div>
+            ))}
           </div>
 
         </div>
+      )}
 
-        {/* ستون چپ: پنل ویرایش دستی انبار و تاریخچه لاگ موجودی */}
-        <div className="space-y-6 xl:col-span-1" id="inventory-sideline-panels">
-          
-          {/* پنل فرم تعدیل دستی کالا */}
-          {selectedProductId && (
-            <div className="bg-white rounded-2xl border border-indigo-200 bg-indigo-50/5 p-5 shadow-sm animate-fade-in" id="corrector-panel-p">
-              <div className="flex justify-between items-center mb-3">
-                <h4 className="font-bold text-xs text-indigo-900 flex items-center gap-1.5">
-                  <ArrowRightLeft className="w-4 h-4" />
-                   فرآیند اصلاح دستی تعداد کالا
-                </h4>
-                <button 
-                  onClick={() => setSelectedProductId('')}
-                  className="text-slate-400 hover:text-red-500 font-bold text-xs"
+      {/* مودال ایجاد و اصلاح مشخصات انبار دپو */}
+      {showWhModal && (
+        <div className="fixed inset-0 bg-slate-900/60 z-50 flex items-center justify-center p-4 backdrop-blur-3xs animate-fade-in" id="wh-modal-overlay">
+          <div className="bg-white rounded-3xl w-full max-w-md p-6 border border-slate-200 shadow-2xl relative space-y-4 text-right" id="wh-form-box">
+            
+            <button
+              onClick={() => setShowWhModal(false)}
+              className="absolute left-4 top-4 text-slate-400 hover:text-slate-600 cursor-pointer"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            <h3 className="font-extrabold text-sm text-slate-900 border-b border-slate-100 pb-2">
+              {editingWh ? 'اصلاح پوشه مشخصات پایگاه دپوی کالا' : 'افزودن نام پایگاه انبار/دپو رسمی'}
+            </h3>
+
+            <form onSubmit={handleSaveWarehouseSubmit} className="space-y-4">
+              
+              <div className="space-y-1">
+                <label className="block text-[11px] font-bold text-slate-500">نام رسمی انبار (مثلا انبار فرعی ویترین):</label>
+                <input
+                  type="text"
+                  required
+                  value={whName}
+                  onChange={e => setWhName(e.target.value)}
+                  placeholder="انبار طبقه بالا، شعبه خاوران..."
+                  className="w-full p-2.5 border border-slate-200 rounded-xl text-xs bg-slate-50 focus:outline-indigo-500"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label className="block text-[11px] font-bold text-slate-500">کد انشار و رفرنس انبارداری (مثل WH-03):</label>
+                <input
+                  type="text"
+                  required
+                  value={whCode}
+                  onChange={e => setWhCode(e.target.value)}
+                  placeholder="WH-03..."
+                  className="w-full p-2.5 border border-slate-200 rounded-xl text-xs bg-slate-50 font-mono text-left focus:outline-indigo-500"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label className="block text-[11px] font-bold text-slate-500">آدرس فیزیکی دقیق جغرافیایی:</label>
+                <input
+                  type="text"
+                  value={whLocation}
+                  onChange={e => setWhLocation(e.target.value)}
+                  placeholder="خیابان یا مجتمع تجاری..."
+                  className="w-full p-2.5 border border-slate-200 rounded-xl text-xs bg-slate-50 focus:outline-indigo-500"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label className="block text-[11px] font-bold text-slate-500">یادداشت‌های مالی/مدیریتی انبار:</label>
+                <textarea
+                  value={whNotes}
+                  onChange={e => setWhNotes(e.target.value)}
+                  placeholder="مسئول نگهبان، ظرفیت کارتن های مجاز فیزیکی..."
+                  rows={2.5}
+                  className="w-full p-2.5 border border-slate-200 rounded-xl text-xs bg-slate-50 focus:outline-indigo-500"
+                />
+              </div>
+
+              <div className="flex gap-2 pt-2">
+                <button
+                  type="submit"
+                  className="flex-1 py-2.5 bg-indigo-650 hover:bg-indigo-700 text-white font-extrabold text-xs rounded-xl shadow-md transition cursor-pointer"
+                >
+                  ذخیره سازی انبار دپو در کارتابل 💾
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowWhModal(false)}
+                  className="py-2.5 px-4 bg-slate-150 text-slate-600 text-xs rounded-xl hover:bg-slate-200 transition cursor-pointer"
                 >
                   انصراف
                 </button>
               </div>
 
-              <div className="text-[11px] bg-indigo-50 border border-indigo-100 p-2.5 rounded-lg text-indigo-800 leading-snug mb-3">
-                 کالای انتخابی: <strong className="font-bold text-indigo-900">{products.find(p => p.id === selectedProductId)?.title}</strong>
-              </div>
-
-              <form onSubmit={handleStockAdjustment} className="space-y-3 text-xs">
-                <div>
-                  <label className="block text-[10px] text-slate-400 mb-1">نوع عملیات انبارداری:</label>
-                  <div className="flex bg-slate-100 p-0.5 rounded-lg" id="adjust-type-toggles">
-                    <button
-                      id="adjust-inc-btn"
-                      type="button"
-                      onClick={() => setAdjustType('increase')}
-                      className={`flex-1 py-1 rounded text-[10px] font-bold ${
-                        adjustType === 'increase' ? 'bg-indigo-600 text-white shadow-xs' : 'text-slate-500'
-                      }`}
-                    >
-                      افزایش موجودی (ورود)
-                    </button>
-                    <button
-                      id="adjust-dec-btn"
-                      type="button"
-                      onClick={() => setAdjustType('decrease')}
-                      className={`flex-1 py-1 rounded text-[10px] font-bold ${
-                        adjustType === 'decrease' ? 'bg-indigo-600 text-white shadow-xs' : 'text-slate-500'
-                      }`}
-                    >
-                      کاهش موجودی (سرقت/فساد)
-                    </button>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-1 gap-3">
-                  <div>
-                    <label className="block text-[10px] text-slate-400 mb-1">میزان اصلاح تعداد:</label>
-                    <input
-                      id="adjust-qty-field"
-                      type="number"
-                      min="1"
-                      required
-                      value={adjustQty}
-                      onChange={e => setAdjustQty(Number(e.target.value))}
-                      className="w-full text-xs px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-left"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-[10px] text-slate-400 mb-1">کد دلیل رسمی اصلاح انبار:</label>
-                    <select
-                      id="adjust-reason-field"
-                      value={adjustReason}
-                      onChange={e => setAdjustReason(e.target.value)}
-                      className="w-full text-[11px] px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-lg"
-                    >
-                      <option value="انبارگردانی سالانه و بازشماری">انبارگردانی سالانه و بازشماری</option>
-                      <option value="کالای منقضی، خراب و یا آسیب‌دیده">کالای آسیب‌دیده، منقضی یا فاسد</option>
-                      <option value="عودت موقت کالا از سوی همکار">کسری تراز تایید شده مشتری</option>
-                      <option value="مغایرت سیستمی اسکنر بارکد">سرقت کالا یا گم شدن فیزیکی</option>
-                    </select>
-                  </div>
-                </div>
-
-                <button
-                  id="confirm-correction-btn"
-                  type="submit"
-                  className="w-full py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-lg shadow-sm transition"
-                >
-                  ثبت تعدیل نهایی انبار و ثبت سند
-                </button>
-              </form>
-            </div>
-          )}
-
-          {/* تاریخچه بافت تراکنش‌های انبار بر اساس لاگ انبارداری (StockLogs Trail) */}
-          <div className="bg-white rounded-2xl border border-slate-200/80 p-5 shadow-sm" id="stock-logs-box">
-            <h3 className="font-bold text-xs text-slate-800 flex items-center gap-1.5 mb-3">
-              <History className="w-4.5 h-4.5 text-emerald-500" />
-               پرونده رویدادهای فیزیکی انبار
-            </h3>
-
-            <div className="overflow-y-auto max-h-96 space-y-2 pr-1" id="stock-logs-scroller">
-              {stockLogs.length === 0 ? (
-                <p className="text-center py-10 text-slate-400 text-[11px] italic">هیچ سند انبارداری ثبت نشده است.</p>
-              ) : (
-                stockLogs.map(log => {
-                  const isPositive = log.change_qty > 0;
-                  return (
-                    <div key={log.id} id={`log-card-${log.id}`} className="p-3 border border-slate-50 rounded-xl bg-slate-50/50 text-[10.5px]">
-                      <div className="flex justify-between items-start mb-1 text-slate-400">
-                        <span className="font-mono text-[9px]">{new Date(log.created_at).toLocaleDateString('fa-IR')}</span>
-                        <span className={`font-bold font-mono px-1.5 rounded text-[8.5px] ${
-                          isPositive ? 'bg-emerald-50 text-emerald-600' : 'bg-red-50 text-red-600'
-                        }`}>
-                          {isPositive ? `+${log.change_qty}` : `${log.change_qty}`}
-                        </span>
-                      </div>
-                      
-                      <div className="text-slate-800">
-                        تغییر در موجودی <strong className="font-bold text-slate-900">«{log.product_title}»</strong>
-                        <div className="text-slate-400 text-[10px] mt-1 space-y-0.5">
-                          <div>تراز: {log.previous_qty} ← {log.new_qty} عدد</div>
-                          <div className="text-[9.5px] font-medium text-slate-500 bg-white border border-slate-100 p-1 rounded mt-1">{log.reason}</div>
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })
-              )}
-            </div>
+            </form>
           </div>
-
         </div>
-
-      </div>
+      )}
 
     </div>
   );

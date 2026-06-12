@@ -12,12 +12,20 @@ export default function PersonsTab() {
   const [personId, setPersonId] = useState<string>('');
   const [name, setName] = useState<string>('');
   const [phone, setPhone] = useState<string>('');
-  const [type, setType] = useState<'Customer' | 'Supplier'>('Customer');
+  const [type, setType] = useState<'Customer' | 'Supplier' | 'Shareholder' | 'Employee' | 'Other'>('Customer');
   const [balance, setBalance] = useState<number>(0);
+  const [sharePercentage, setSharePercentage] = useState<number>(0);
+  const [nationalCode, setNationalCode] = useState<string>('');
+  const [economicCode, setEconomicCode] = useState<string>('');
+  const [address, setAddress] = useState<string>('');
+  const [email, setEmail] = useState<string>('');
+  const [notes, setNotes] = useState<string>('');
+  const [postalCode, setPostalCode] = useState<string>('');
+  const [landline, setLandline] = useState<string>('');
   
   // وضعیت جستجو و فیلترها
   const [searchQuery, setSearchQuery] = useState('');
-  const [filterType, setFilterType] = useState<'All' | 'Customer' | 'Supplier' | 'Debtors' | 'Creditors'>('All');
+  const [filterType, setFilterType] = useState<'All' | 'Customer' | 'Supplier' | 'Shareholder' | 'Employee' | 'Other' | 'Debtors' | 'Creditors'>('All');
   
   // بارگذاری داده‌ها پس از بارگذاری کامپوننت
   useEffect(() => {
@@ -44,12 +52,38 @@ export default function PersonsTab() {
     e.preventDefault();
     if (!name.trim()) return;
 
+    if (type === 'Shareholder') {
+      const shareVal = Number(sharePercentage);
+      if (shareVal < 0 || shareVal > 100) {
+        alert('درصد سهم وارد شده باید بین ۰ تا ۱۰۰ باشد.');
+        return;
+      }
+
+      // بررسی سهم سایر سهام‌داران تا مطمئن شویم از ۱۰۰ درصد عبور نمی‌کند
+      const totalOtherShare = persons
+        .filter(p => p.type === 'Shareholder' && p.id !== personId)
+        .reduce((sum, p) => sum + (p.share_percentage || 0), 0);
+
+      if (totalOtherShare + shareVal > 100) {
+        alert(`خطا: مجموع درصد سهام از ۱۰۰٪ بیشتر می‌شود. مجموع سهم سایر سهام‌داران: ${totalOtherShare}٪ است. حداکثر سهم مجاز جدید: ${100 - totalOtherShare}٪ است.`);
+        return;
+      }
+    }
+
     OfflineDatabase.savePerson({
       id: personId ? personId : undefined,
       name,
       phone,
       type,
-      balance: Number(balance)
+      balance: Number(balance),
+      national_code: nationalCode,
+      economic_code: economicCode,
+      address,
+      email,
+      notes,
+      postal_code: postalCode,
+      landline,
+      share_percentage: type === 'Shareholder' ? Number(sharePercentage) : undefined,
     });
 
     // بازنشانی فرم
@@ -63,6 +97,14 @@ export default function PersonsTab() {
     setPhone('');
     setType('Customer');
     setBalance(0);
+    setSharePercentage(0);
+    setNationalCode('');
+    setEconomicCode('');
+    setAddress('');
+    setEmail('');
+    setNotes('');
+    setPostalCode('');
+    setLandline('');
   };
 
   // ویرایش شخص
@@ -72,6 +114,14 @@ export default function PersonsTab() {
     setPhone(p.phone);
     setType(p.type);
     setBalance(p.balance);
+    setSharePercentage(p.share_percentage || 0);
+    setNationalCode(p.national_code || '');
+    setEconomicCode(p.economic_code || '');
+    setAddress(p.address || '');
+    setEmail(p.email || '');
+    setNotes(p.notes || '');
+    setPostalCode(p.postal_code || '');
+    setLandline(p.landline || '');
   };
 
   // حذف شخص
@@ -97,6 +147,9 @@ export default function PersonsTab() {
     
     if (filterType === 'Customer') return p.type === 'Customer';
     if (filterType === 'Supplier') return p.type === 'Supplier';
+    if (filterType === 'Shareholder') return p.type === 'Shareholder';
+    if (filterType === 'Employee') return p.type === 'Employee';
+    if (filterType === 'Other') return p.type === 'Other';
     if (filterType === 'Debtors') return p.balance > 0;
     if (filterType === 'Creditors') return p.balance < 0;
     
@@ -163,17 +216,20 @@ export default function PersonsTab() {
               </div>
             </div>
 
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-2 gap-3 mb-3">
               <div>
                 <label className="block text-[11px] mb-1 font-medium text-slate-500">نوع حساب:</label>
                 <select
                   id="person-type-select"
                   value={type}
-                  onChange={e => setType(e.target.value as 'Customer' | 'Supplier')}
-                  className="w-full text-xs px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg h-9 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
+                  onChange={e => setType(e.target.value as 'Customer' | 'Supplier' | 'Shareholder' | 'Employee' | 'Other')}
+                  className="w-full text-xs px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg h-9 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 font-medium"
                 >
                   <option value="Customer">مشتری (خریدار)</option>
                   <option value="Supplier">تامین‌کننده (پخش کالا)</option>
+                  <option value="Shareholder">سهام‌دار (سرمایه‌گذار)</option>
+                  <option value="Employee">کارمند / پرسنل</option>
+                  <option value="Other">سایر حساب‌ها</option>
                 </select>
               </div>
               <div>
@@ -187,7 +243,117 @@ export default function PersonsTab() {
                   className="w-full text-xs px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 text-left disabled:opacity-60"
                   placeholder="مثبت بدهکار، منفی بستانکار"
                 />
-                <span className="text-[10px] text-slate-400 mt-1 block">بدهکاری مشتری مثبت و بستانکاری ما منفی است</span>
+                <span className="text-[10px] text-slate-400 mt-1 block">بدهکاری شخص مثبت و بستانکاری ما منفی است</span>
+              </div>
+            </div>
+
+            {type === 'Shareholder' && (
+              <div className="bg-emerald-50/50 border border-emerald-200/50 p-3 rounded-xl mb-3 flex gap-4 items-center">
+                <div className="w-[120px]">
+                  <label className="block text-[11px] mb-1 font-bold text-emerald-800">درصد سهم (۰-۱۰۰):</label>
+                  <input
+                    id="person-share-percentage-input"
+                    type="number"
+                    min="0"
+                    max="100"
+                    value={sharePercentage || ''}
+                    onChange={e => setSharePercentage(Number(e.target.value))}
+                    className="w-full text-xs px-3 py-2 bg-white border border-emerald-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500/20 text-left font-mono font-bold text-emerald-700"
+                    placeholder="درصد سهم"
+                  />
+                </div>
+                <div className="text-[10px] text-emerald-600 flex-1 leading-relaxed">
+                  مجموع سهام تعریف‌شده در سیستم نباید از ۱۰۰٪ بیشتر شود. این درصد جهت تسهیم دارایی و سود کاربرد دارد.
+                </div>
+              </div>
+            )}
+
+            <div className="border-t border-slate-100 pt-3 mt-3">
+              <span className="block text-[11px] font-bold text-slate-700 mb-2">اطلاعات تکمیلی و حقوقی</span>
+              <div className="grid grid-cols-2 gap-3 mb-3">
+                <div>
+                  <label className="block text-[11px] mb-1 font-medium text-slate-500">کد ملی / شناسه ملی:</label>
+                  <input
+                    id="person-national-code"
+                    type="text"
+                    value={nationalCode}
+                    onChange={e => setNationalCode(e.target.value)}
+                    className="w-full text-xs px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 text-left font-mono"
+                    placeholder="کد ملی ۱۰ رقمی"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] mb-1 font-medium text-slate-500">کد اقتصادی:</label>
+                  <input
+                    id="person-economic-code"
+                    type="text"
+                    value={economicCode}
+                    onChange={e => setEconomicCode(e.target.value)}
+                    className="w-full text-xs px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 text-left font-mono"
+                    placeholder="کد اقتصادی شرکت"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3 mb-3">
+                <div>
+                  <label className="block text-[11px] mb-1 font-medium text-slate-500">تلفن ثابت:</label>
+                  <input
+                    id="person-landline"
+                    type="text"
+                    value={landline}
+                    onChange={e => setLandline(e.target.value)}
+                    className="w-full text-xs px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 text-left font-mono"
+                    placeholder="۰۲۱..."
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] mb-1 font-medium text-slate-500">کد پستی:</label>
+                  <input
+                    id="person-postal-code"
+                    type="text"
+                    value={postalCode}
+                    onChange={e => setPostalCode(e.target.value)}
+                    className="w-full text-xs px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 text-left font-mono"
+                    placeholder="کد پستی ۱۰ رقمی"
+                  />
+                </div>
+              </div>
+
+              <div className="mb-3">
+                <label className="block text-[11px] mb-1 font-medium text-slate-500">آدرس پست الکترونیکی (ایمیل):</label>
+                <input
+                  id="person-email"
+                  type="email"
+                  value={email}
+                  onChange={e => setEmail(e.target.value)}
+                  className="w-full text-xs px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 text-left font-mono"
+                  placeholder="info@example.com"
+                />
+              </div>
+
+              <div className="mb-3">
+                <label className="block text-[11px] mb-1 font-medium text-slate-500">آدرس کامل سکونت / شرکت:</label>
+                <textarea
+                  id="person-address"
+                  value={address}
+                  onChange={e => setAddress(e.target.value)}
+                  rows={2}
+                  className="w-full text-xs px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 resize-none font-sans"
+                  placeholder="استان، شهر، خیابان، پلاک، واحد..."
+                />
+              </div>
+
+              <div className="mb-3">
+                <label className="block text-[11px] mb-1 font-medium text-slate-500">یادداشت‌ها و توضیحات:</label>
+                <textarea
+                  id="person-notes"
+                  value={notes}
+                  onChange={e => setNotes(e.target.value)}
+                  rows={2}
+                  className="w-full text-xs px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 resize-none font-sans"
+                  placeholder="تضمین‌های مالی، حساب‌های جانبی یا نکات دیگر..."
+                />
               </div>
             </div>
 
@@ -220,12 +386,21 @@ export default function PersonsTab() {
 
           {/* فیلتر تب‌ها */}
           <div className="flex flex-wrap gap-1 mb-3 bg-slate-100 p-1 rounded-xl" id="person-filter-tabs">
-            {(['All', 'Customer', 'Supplier', 'Debtors', 'Creditors'] as const).map(tab => (
+            {([
+              'All',
+              'Customer',
+              'Supplier',
+              'Shareholder',
+              'Employee',
+              'Other',
+              'Debtors',
+              'Creditors'
+            ] as const).map(tab => (
               <button
                 key={tab}
                 id={`filter-btn-${tab}`}
                 onClick={() => setFilterType(tab)}
-                className={`flex-1 text-[10px] py-1 px-1 rounded-lg font-medium transition ${
+                className={`text-[9px] sm:text-[10px] py-1 px-2 rounded-lg font-medium transition ${
                   filterType === tab 
                     ? 'bg-white text-slate-800 shadow-xs border border-slate-200/50' 
                     : 'text-slate-500 hover:text-slate-700'
@@ -234,6 +409,9 @@ export default function PersonsTab() {
                 {tab === 'All' && 'همه'}
                 {tab === 'Customer' && 'مشتریان'}
                 {tab === 'Supplier' && 'تامین‌کنندگان'}
+                {tab === 'Shareholder' && 'سهام‌داران'}
+                {tab === 'Employee' && 'کارمندان'}
+                {tab === 'Other' && 'سایرین'}
                 {tab === 'Debtors' && 'بدهکاران'}
                 {tab === 'Creditors' && 'بستانکاران'}
               </button>
@@ -260,10 +438,22 @@ export default function PersonsTab() {
                     }`}
                   >
                     <div className="flex items-start gap-2.5">
-                      <div className={`p-1.5 rounded-lg ${
-                        p.type === 'Customer' ? 'bg-blue-50 text-blue-600' : 'bg-purple-50 text-purple-600'
+                      <div className={`p-1.5 rounded-lg text-[9px] font-bold leading-none ${
+                        p.type === 'Customer' 
+                          ? 'bg-blue-50 text-blue-600' 
+                          : p.type === 'Supplier' 
+                            ? 'bg-purple-50 text-purple-600' 
+                            : p.type === 'Shareholder' 
+                              ? 'bg-emerald-50 text-emerald-600' 
+                              : p.type === 'Employee' 
+                                ? 'bg-amber-50 text-amber-600' 
+                                : 'bg-slate-100 text-slate-500'
                       }`}>
-                        <Briefcase className="w-4 h-4" />
+                        {p.type === 'Customer' && 'مشتری'}
+                        {p.type === 'Supplier' && 'پخش‌کننده'}
+                        {p.type === 'Shareholder' && `سهام‌دار (${p.share_percentage || 0}٪)`}
+                        {p.type === 'Employee' && 'پرسنل'}
+                        {p.type === 'Other' && 'متفرقه'}
                       </div>
                       <div>
                         <h4 className="font-bold text-xs text-slate-800 flex items-center gap-2">
@@ -272,7 +462,7 @@ export default function PersonsTab() {
                             <span className="text-[9px] bg-slate-100 text-slate-500 px-1 py-0.2 rounded">سیستمی</span>
                           )}
                         </h4>
-                        <span className="text-[10px] text-slate-400 block font-mono mt-0.5">{p.phone}</span>
+                        <span className="text-[10px] text-slate-400 block font-mono mt-0.5">{p.phone !== '0' ? p.phone : 'بدون شماره'}</span>
                       </div>
                     </div>
                     <div className="text-left flex flex-col items-end gap-1.5">
@@ -319,8 +509,12 @@ export default function PersonsTab() {
           <>
             <div className="border-b border-slate-100 pb-4 mb-4 flex justify-between items-center" id="ledger-header">
               <div>
-                <span className="text-[10px] text-[emerald] bg-slate-100 text-slate-500 px-2 py-0.5 rounded-md font-medium">
-                  {selectedPerson.type === 'Customer' ? 'کارت حساب مشتری' : 'حساب بستانکاری تامین‌کننده'}
+                <span className="text-[10px] bg-slate-100 text-slate-500 px-2 py-0.5 rounded-md font-medium">
+                  {selectedPerson.type === 'Customer' && 'کارت حساب مشتری'}
+                  {selectedPerson.type === 'Supplier' && 'حساب بستانکاری تامین‌کننده'}
+                  {selectedPerson.type === 'Shareholder' && `کارت حساب سهام‌دار (${selectedPerson.share_percentage || 0}٪ سهم)`}
+                  {selectedPerson.type === 'Employee' && 'حساب پرسنلی کارمند / همکار'}
+                  {selectedPerson.type === 'Other' && 'حساب متفرقه'}
                 </span>
                 <h3 className="font-bold text-base text-slate-800 mt-1">{selectedPerson.name}</h3>
                 <p className="text-xs text-slate-400 flex items-center gap-1.5 mt-0.5 font-mono">
@@ -340,6 +534,54 @@ export default function PersonsTab() {
                 </span>
               </div>
             </div>
+
+            {/* مشخصات تکمیلی شخص در معین */}
+            {(selectedPerson.national_code || selectedPerson.economic_code || selectedPerson.landline || selectedPerson.postal_code || selectedPerson.email || selectedPerson.address || selectedPerson.notes) && (
+              <div className="bg-slate-50 border border-slate-200/60 rounded-xl p-3.5 mb-4 grid grid-cols-2 gap-3 text-xs" id="ledger-advanced-details">
+                {selectedPerson.national_code && (
+                  <div>
+                    <span className="text-slate-400 block mb-0.5">کد ملی / شناسه ملی:</span>
+                    <span className="font-bold text-slate-700 font-mono">{selectedPerson.national_code}</span>
+                  </div>
+                )}
+                {selectedPerson.economic_code && (
+                  <div>
+                    <span className="text-slate-400 block mb-0.5">کد اقتصادی:</span>
+                    <span className="font-bold text-slate-700 font-mono">{selectedPerson.economic_code}</span>
+                  </div>
+                )}
+                {selectedPerson.landline && (
+                  <div>
+                    <span className="text-slate-400 block mb-0.5">تلفن ثابت:</span>
+                    <span className="font-bold text-slate-700 font-mono">{selectedPerson.landline}</span>
+                  </div>
+                )}
+                {selectedPerson.postal_code && (
+                  <div>
+                    <span className="text-slate-400 block mb-0.5">کد پستی:</span>
+                    <span className="font-bold text-slate-700 font-mono">{selectedPerson.postal_code}</span>
+                  </div>
+                )}
+                {selectedPerson.email && (
+                  <div className="col-span-2">
+                    <span className="text-slate-400 block mb-0.5">پست الکترونیکی:</span>
+                    <span className="font-bold text-slate-700 font-mono">{selectedPerson.email}</span>
+                  </div>
+                )}
+                {selectedPerson.address && (
+                  <div className="col-span-2">
+                    <span className="text-slate-400 block mb-0.5">آدرس کامل:</span>
+                    <span className="font-semibold text-slate-700">{selectedPerson.address}</span>
+                  </div>
+                )}
+                {selectedPerson.notes && (
+                  <div className="col-span-2 border-t border-slate-200/60 pt-2 mt-1">
+                    <span className="text-slate-400 block mb-0.5">توضیحات / یادداشت‌ها:</span>
+                    <p className="text-slate-600 bg-white p-2 rounded border border-slate-100 text-[11px] whitespace-pre-wrap">{selectedPerson.notes}</p>
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* تاریخچه تراکنش‌ها */}
             <div className="flex-1 overflow-y-auto" id="ledger-transactions">

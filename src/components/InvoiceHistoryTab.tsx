@@ -2,6 +2,9 @@ import React, { useState, useEffect } from 'react';
 import { OfflineDatabase } from '../db/offlineDb';
 import { Invoice, Person, InvoiceItem } from '../types';
 import { FileText, Search, Printer, RotateCcw, AlertTriangle, Filter, Eye, ChevronLeft } from 'lucide-react';
+import { SettingsService, AppSettings } from '../utils/settings';
+import { InvoiceDesignerService, InvoiceTemplateDesign } from '../utils/invoiceDesignerSettings';
+import InvoiceShapes from './InvoiceShapes';
 
 export default function InvoiceHistoryTab() {
   const [invoices, setInvoices] = useState<Invoice[]>([]);
@@ -14,8 +17,24 @@ export default function InvoiceHistoryTab() {
   const [selectedInvoiceItems, setSelectedInvoiceItems] = useState<InvoiceItem[]>([]);
   const [selectedInvoicePerson, setSelectedInvoicePerson] = useState<Person | null>(null);
 
+  const [appSettings, setAppSettings] = useState<AppSettings>(SettingsService.get());
+  const [templateDesign, setTemplateDesign] = useState<InvoiceTemplateDesign>(InvoiceDesignerService.get());
+
   useEffect(() => {
     refreshData();
+
+    const handleSettingsUpdate = () => {
+      setAppSettings(SettingsService.get());
+    };
+    const handleDesignerUpdate = () => {
+      setTemplateDesign(InvoiceDesignerService.get());
+    };
+    window.addEventListener('cofeclick_settings_updated', handleSettingsUpdate);
+    window.addEventListener('cofeclick_designer_updated', handleDesignerUpdate);
+    return () => {
+      window.removeEventListener('cofeclick_settings_updated', handleSettingsUpdate);
+      window.removeEventListener('cofeclick_designer_updated', handleDesignerUpdate);
+    };
   }, []);
 
   const refreshData = () => {
@@ -268,95 +287,228 @@ export default function InvoiceHistoryTab() {
             </div>
 
             {/* برگ آ۴ فاکتور */}
-            <div className="border-[2px] border-slate-900 p-6 select-text space-y-6 text-slate-950 font-sans" id="reprint-paper">
-              <div className="grid grid-cols-3 items-center border-[2px] border-slate-900 -mx-6 -mt-6 p-4 bg-slate-50">
-                <div className="text-right">
-                  <h1 className="font-extrabold text-sm text-slate-900">فاکتور رسمی حسابداری فروش مستقیم</h1>
-                  <span className="text-[9px] text-slate-400">بخش آرشیو و ذخیره‌سازی داده‌های آفلاین</span>
-                </div>
-                <div className="text-center font-bold text-xs bg-slate-200 py-1 border border-slate-900 rounded">
-                  {selectedInvoice.type === 'Purchase' ? 'فاکتور خرید کالا' : 'فاکتور فروش کالا و خدمات'}
-                </div>
-                <div className="text-left text-[11px] font-mono leading-relaxed space-y-0.5">
-                  <div>شماره فاکتور: {selectedInvoice.invoice_number}</div>
-                  <div>تاریخ صدور اولیه: {new Date(selectedInvoice.created_at).toLocaleDateString('fa-IR')}</div>
-                  <div>وضعیت تسویه: {selectedInvoice.payment_status === 'Paid' ? 'نقدی کامل' : selectedInvoice.payment_status === 'Unpaid' ? 'حساب نسیه' : 'علی‌الحساب'}</div>
-                </div>
-              </div>
+            <div 
+              className="bg-white text-slate-950 shadow-2xl transition-all duration-300 relative select-text w-full group A4-paper"
+              style={{ 
+                fontFamily: templateDesign.fontFamily === 'Vazirmatn' ? 'Vazirmatn, sans-serif' : 'sans-serif',
+                fontSize: templateDesign.fontSizeScale === 'sm' ? '11px' : templateDesign.fontSizeScale === 'lg' ? '14px' : templateDesign.fontSizeScale === 'xl' ? '16px' : '12px',
+                borderWidth: `${templateDesign.lineWidth}px`,
+                borderColor: templateDesign.borderColor,
+                borderStyle: templateDesign.borderStyle,
+                padding: `${templateDesign.layoutPadding}px`,
+                lineHeight: '1.7'
+              }}
+              id="reprint-paper"
+            >
+              {/* طرح فانتزی و اشکال برگردان اریب بردی پس‌زمینه فاکتور */}
+              <InvoiceShapes primaryColor={templateDesign.primaryColor} styleName={templateDesign.shapeStyle} />
 
-              {/* طرف حساب */}
-              <div className="border border-slate-900 p-4 rounded text-xs">
-                <h4 className="font-bold border-b border-slate-900 pb-1 -mx-4 -mt-4 bg-slate-100 px-4">مشخصات طرف حساب تجاری (خریدار / دریافت‌کننده کالا)</h4>
-                <div className="grid grid-cols-3 gap-4 pt-2">
-                  <div>
-                    <span className="text-slate-400">نام خریدار:</span>
-                    <span className="font-bold block text-slate-950">{selectedInvoicePerson.name}</span>
-                  </div>
-                  <div>
-                    <span className="text-slate-400">تلفن همراه:</span>
-                    <span className="font-bold block text-slate-950 font-mono">{selectedInvoicePerson.phone !== '0' ? selectedInvoicePerson.phone : 'سیستمی'}</span>
-                  </div>
-                  <div>
-                    <span className="text-slate-400">شناسه حسابداری:</span>
-                    <span className="font-bold block text-slate-950 font-mono">{selectedInvoicePerson.id}</span>
-                  </div>
-                </div>
-              </div>
+              <div className="relative z-10 space-y-4">
+                {/* کمپایلر تر ترتیبی سکشن‌های فاکتور با طرح‌بندی دقیق المنتور */}
+                {templateDesign.sectionsOrder.map((secId) => {
+                
+                // هدر
+                if (secId === 'header') {
+                  return (
+                    <div key="header" className="border-b border-slate-300 pb-3 h-auto mb-4" id="print-sec-header">
+                      <div className="flex justify-between items-start md:items-center">
+                        {templateDesign.widgets.showLogo ? (
+                          <div className="flex items-center gap-2">
+                            <div className="w-10 h-10 rounded-xl bg-slate-900 flex items-center justify-center text-white font-extrabold text-sm shadow">
+                              آریا
+                            </div>
+                            <div>
+                              <h4 className="font-black text-xs text-slate-800">حسابداری آریا</h4>
+                              <span className="text-[9px] text-slate-400 font-mono block leading-none">Aria Store ERP v1 (آرشیو)</span>
+                            </div>
+                          </div>
+                        ) : (
+                          <h4 className="font-extrabold text-xs text-slate-800">سامانه حسابداری بومی</h4>
+                        )}
 
-              {/* سطرها */}
-              <div className="border border-slate-900 rounded overflow-hidden text-xs">
-                <table className="w-full border-collapse">
-                  <thead>
-                    <tr className="bg-slate-100 border-b border-slate-900 text-slate-800 text-right font-bold h-9">
-                      <th className="py-2.5 px-3 border-l border-slate-900 w-12 text-center">ردیف</th>
-                      <th className="py-2.5 px-3 border-l border-slate-900">شرح عنوان اقلام</th>
-                      <th className="py-2.5 px-3 border-l border-slate-900 text-center w-24">نوع سطر</th>
-                      <th className="py-2.5 px-3 border-l border-slate-900 text-left w-20">تعداد</th>
-                      <th className="py-2.5 px-3 border-l border-slate-900 text-left w-28">قیمت واحد (T)</th>
-                      <th className="py-2.5 px-3 text-left w-28">مبلغ نهایی (T)</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {selectedInvoiceItems.map((item, index) => (
-                      <tr key={item.id} className="border-b border-slate-900 h-9">
-                        <td className="py-2 px-3 border-l border-slate-900 text-center font-mono">{index + 1}</td>
-                        <td className="py-2 px-3 border-l border-slate-900 font-bold">{item.item_id === 'srv_1' || item.item_id === 'srv_2' || item.item_id === 'srv_3' ? `سرویس: ${item.item_id}` : `کالا و ملزومات فروشگاهی`}</td>
-                        <td className="py-2 px-3 border-l border-slate-900 text-center">{item.item_type === 'Product' ? 'کالای انبارداری' : 'هزینه دستمزد'}</td>
-                        <td className="py-2 px-3 border-l border-slate-900 text-left font-mono">{item.quantity}</td>
-                        <td className="py-2 px-3 border-l border-slate-900 text-left font-mono">{item.price.toLocaleString('fa-IR')}</td>
-                        <td className="py-2 px-3 text-left font-bold font-mono">{(item.price * item.quantity).toLocaleString('fa-IR')}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+                        <div className="text-center">
+                          <h1 className="font-extrabold text-xs md:text-sm tracking-tight px-3 py-1 rounded" style={{ color: templateDesign.primaryColor }}>
+                            {templateDesign.customInvoiceTitle || 'صورتحساب خرید/فروش اقلام'}
+                          </h1>
+                          {templateDesign.widgets.showPaymentStatusBadge && (
+                            <span className="inline-block mt-1 bg-indigo-100 text-indigo-800 text-[9px] font-extrabold px-2.5 py-0.5 rounded-full shadow-sm border border-indigo-200">
+                              {selectedInvoice.type === 'Purchase' ? 'فاکتور خرید کالا' : 'فاکتور فروش کالا و خدمات'}
+                            </span>
+                          )}
+                        </div>
 
-              {/* محاسبات */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs pt-2">
-                <div className="border border-slate-900 p-3 rounded leading-relaxed text-slate-500">
-                  <span className="font-bold text-slate-900 block mb-1 font-sans">توضیحات ابطال یا بازبینی:</span>
-                  <p>این فاکتور از آرشیو دائمی بازخوانی شده است. تراز حسابداری و تغییرات موجودی انبار بابت این سند معین شده و تغییر‌ناپذیرند مگر در صورت فشردن دکمه ابطال دستی فاکتور.</p>
-                </div>
+                        <div className="text-left text-[9.5px] text-slate-500 font-mono space-y-0.5 leading-tight">
+                          <div>شماره فاکتور: <strong className="text-slate-900 font-bold font-sans">{selectedInvoice.invoice_number}</strong></div>
+                          <div>تاریخ صدور اولیه: <span className="font-medium">{new Date(selectedInvoice.created_at).toLocaleDateString('fa-IR')}</span></div>
+                          
+                          {templateDesign.widgets.showInvoiceBarcode && (
+                            <div className="pt-2 flex flex-col items-end">
+                              <div className="w-20 h-4 bg-slate-950 flex items-center justify-between px-1 rounded-sm gap-0.5">
+                                {[1,3,2,1,4,2,3,1,2,3,4,1,2,3,4,2,3,1].map((w, i) => (
+                                  <div key={i} className="bg-white h-3.5" style={{ width: `${w * 0.9}px` }} />
+                                ))}
+                              </div>
+                              <span className="text-[7.5px] text-slate-400 select-none block text-center w-20">{selectedInvoice.invoice_number}</span>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                }
 
-                <div className="border border-slate-900 overflow-hidden rounded">
-                  <div className="border-b border-slate-900 p-2 flex justify-between bg-slate-50">
-                    <span className="text-slate-500">جمع ناخالص:</span>
-                    <span className="font-mono font-bold">{formatToman(selectedInvoice.total_amount)}</span>
-                  </div>
-                  <div className="border-b border-slate-900 p-2 flex justify-between text-red-500">
-                    <span>کسر تخفیف فاکتور:</span>
-                    <span className="font-mono font-bold">-{formatToman(selectedInvoice.discount)}</span>
-                  </div>
-                  <div className="p-2 flex justify-between bg-slate-100 text-sm font-extrabold text-slate-950">
-                    <span>مبلغ پرداخت شده:</span>
-                    <span className="font-mono text-[15px] text-emerald-800">{formatToman(selectedInvoice.final_amount)}</span>
-                  </div>
-                </div>
-              </div>
+                // متعاملین
+                if (secId === 'entities_info') {
+                  return (
+                    <div key="entities_info" className="space-y-3 mb-4 text-[11px]" id="print-sec-entities">
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        {templateDesign.widgets.showSellerDetails && (
+                          <div className="border border-slate-200 rounded-xl p-3 bg-slate-50/50 space-y-1.5 text-right">
+                            <h4 className="font-black text-[11px] border-b border-slate-200 pb-1 flex items-center gap-1 text-slate-800">
+                              <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: templateDesign.primaryColor }}></span>
+                              مشخصات صادرکننده سند چاپی (فروشگاه)
+                            </h4>
+                            <div className="space-y-0.8 leading-relaxed">
+                              <div><strong>نام فروشگاه:</strong> {appSettings.storeName || 'کسب و کار آریا'}</div>
+                              {appSettings.storeEconomicCode && <div><strong>کد اقتصادی:</strong> <span className="font-mono">{appSettings.storeEconomicCode}</span></div>}
+                              {appSettings.storePhone && <div><strong>تلفن رسمی تماس:</strong> <span className="font-mono">{appSettings.storePhone}</span></div>}
+                              {appSettings.storeAddress && <div><strong>نشانی مرکز:</strong> {appSettings.storeAddress}</div>}
+                            </div>
+                          </div>
+                        )}
+
+                        {templateDesign.widgets.showBuyerDetails && (
+                          <div className="border border-slate-200 rounded-xl p-3 bg-slate-50/50 space-y-1.5 text-right">
+                            <h4 className="font-black text-[11px] border-b border-slate-200 pb-1 flex items-center gap-1 text-slate-800">
+                              <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: templateDesign.primaryColor }}></span>
+                              مشخصات طرف حساب تجاری (خریدار)
+                            </h4>
+                            <div className="space-y-0.8 leading-relaxed">
+                              <div><strong>نام شخص:</strong> {selectedInvoicePerson.name}</div>
+                              {selectedInvoicePerson.phone !== '0' && <div><strong>تلفن همراه:</strong> <span className="font-mono">{selectedInvoicePerson.phone}</span></div>}
+                              {selectedInvoicePerson.national_code && <div><strong>کد ملی حقیقی:</strong> <span className="font-mono">{selectedInvoicePerson.national_code}</span></div>}
+                              {selectedInvoicePerson.address && <div><strong>نشانی خریدار:</strong> {selectedInvoicePerson.address}</div>}
+                              <div><strong>کد عضویت معین:</strong> <span className="font-mono">{selectedInvoicePerson.id}</span></div>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                }
+
+                // جدول اقلام
+                if (secId === 'items_table') {
+                  return (
+                    <div key="items_table" className="border border-slate-350 rounded-xl overflow-hidden mb-4" id="print-sec-table">
+                      <table className="w-full text-right border-collapse text-[10.5px]">
+                        <thead>
+                          <tr className="border-b border-slate-350" style={{ backgroundColor: templateDesign.secondaryColor }}>
+                            {templateDesign.widgets.showItemIndexNumber && (
+                              <th className="p-2 border-l border-slate-200 text-center w-8">ردیف</th>
+                            )}
+                            {templateDesign.widgets.showBarcodeColumn && (
+                              <th className="p-2 border-l border-slate-200 text-center w-16">بارکد</th>
+                            )}
+                            <th className="p-2 border-l border-slate-200">شرح عنوان اقلام</th>
+                            {templateDesign.widgets.showUnitColumn && (
+                              <th className="p-2 border-l border-slate-200 text-center w-24">نوع سطر</th>
+                            )}
+                            <th className="p-2 border-l border-slate-200 text-left w-12">تعداد</th>
+                            <th className="p-2 border-l border-slate-200 text-left w-20">واحد (ت)</th>
+                            {templateDesign.widgets.showItemDiscountField && (
+                              <th className="p-2 border-l border-slate-200 text-left w-16">تخفیف (ت)</th>
+                            )}
+                            <th className="p-2 text-left w-24">مبلغ نهایی (تومان)</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-200">
+                          {selectedInvoiceItems.map((item, index) => (
+                            <tr key={item.id || index} className="h-8">
+                              {templateDesign.widgets.showItemIndexNumber && <td className="p-2 border-l border-slate-200 text-center font-mono">{index + 1}</td>}
+                              {templateDesign.widgets.showBarcodeColumn && <td className="p-2 border-l border-slate-200 text-center font-mono text-[9px] text-slate-400">---</td>}
+                              <td className="p-2 border-l border-slate-200 font-bold text-slate-800">{item.item_id === 'srv_1' || item.item_id === 'srv_2' || item.item_id === 'srv_3' ? `سرویس: ${item.item_id}` : `کالا و ملزومات فروشگاهی`}</td>
+                              {templateDesign.widgets.showUnitColumn && <td className="p-2 border-l border-slate-200 text-center">{item.item_type === 'Product' ? 'کالای انبارداری' : 'هزینه دستمزد'}</td>}
+                              <td className="p-2 border-l border-slate-200 text-left font-mono">{item.quantity}</td>
+                              <td className="p-2 border-l border-slate-200 text-left font-mono">{item.price.toLocaleString('fa-IR')}</td>
+                              {templateDesign.widgets.showItemDiscountField && <td className="p-2 border-l border-slate-200 text-left font-mono">0</td>}
+                              <td className="p-2 text-left font-bold font-mono">{(item.price * item.quantity).toLocaleString('fa-IR')}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  );
+                }
+
+                // حسابداری مالی
+                if (secId === 'financial_receipt') {
+                  return (
+                    <div key="financial_receipt" className="space-y-3 mb-4 text-[10.5px]" id="print-sec-financial">
+                      <div className="grid grid-cols-1 md:grid-cols-12 gap-3">
+                        <div className="md:col-span-7 border border-slate-200 p-3 rounded-xl bg-slate-50/50 space-y-1 text-right">
+                          <span className="font-bold text-slate-700 block text-[11px]">توضیحات ابطال یا بازبینی:</span>
+                          {templateDesign.widgets.showTermsAndFooterText ? (
+                            <p className="text-slate-500 text-[10px] leading-relaxed text-justify italic">
+                              {templateDesign.customTermsNote || 'این فاکتور از آرشیو دائمی بازخوانی شده است. تراز حسابداری و تغییرات موجودی انبار بابت این سند معین شده و تغییر‌ناپذیرند مگر در صورت فشردن دکمه ابطال دستی فاکتور.'}
+                            </p>
+                          ) : (
+                            <p className="text-slate-400 text-[9.5px] italic">توضیحات آرشیو چاپ نشده است.</p>
+                          )}
+                        </div>
+
+                        <div className="md:col-span-5 border border-slate-205 py-2 px-3.5 rounded-xl bg-slate-100/50 space-y-1.5 divide-y divide-slate-250">
+                          <div className="flex justify-between items-center pb-1 text-slate-600 text-right">
+                            <span>جمع ناخالص:</span>
+                            <span className="font-mono font-bold">{formatToman(selectedInvoice.total_amount)}</span>
+                          </div>
+                          {templateDesign.widgets.showItemDiscountField && (
+                            <div className="flex justify-between items-center py-1 text-red-655 h-6 leading-none">
+                              <span>کسر تخفیف فاکتور:</span>
+                              <span className="font-mono font-bold">-{formatToman(selectedInvoice.discount)}</span>
+                            </div>
+                          )}
+                          <div className="flex justify-between items-center pt-1.5 font-black text-xs h-8 leading-none" style={{ color: templateDesign.primaryColor }}>
+                            <span>مبلغ پرداخت شده نهایی:</span>
+                            <span className="font-mono text-xs font-black">{formatToman(selectedInvoice.final_amount)}</span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                }
+
+                // امضاها
+                if (secId === 'signatures') {
+                  return (
+                    <div key="signatures" className="h-auto pb-4 pt-1" id="print-sec-signatures">
+                      {templateDesign.widgets.showSignatureBoxes ? (
+                        <div className="grid grid-cols-2 gap-4 text-center text-[10.5px]">
+                          <div className="border border-slate-200/80 rounded-xl p-4 bg-slate-50/20 shadow-xs h-24 flex flex-col justify-between">
+                            <strong className="text-slate-500 font-bold">{templateDesign.customSellerStampLabel}</strong>
+                            <span className="text-[9px] text-slate-400 font-mono italic">مهر و امضای شرکت</span>
+                          </div>
+                          <div className="border border-slate-200/80 rounded-xl p-4 bg-slate-50/20 shadow-xs h-24 flex flex-col justify-between">
+                            <strong className="text-slate-500 font-bold">{templateDesign.customBuyerSignatureLabel}</strong>
+                            <span className="text-[9px] text-slate-400 italic">گواهی صحت و دریافت کالا</span>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="p-2 border border-dashed border-slate-200 text-slate-400 rounded-xl text-center text-[10px]">
+                          کادر امضا غیرفعال است.
+                        </div>
+                      )}
+                    </div>
+                  );
+                }
+
+                return null;
+              })}
             </div>
             
           </div>
         </div>
+      </div>
       )}
 
     </div>
