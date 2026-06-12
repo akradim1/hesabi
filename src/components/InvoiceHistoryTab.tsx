@@ -74,9 +74,7 @@ export default function InvoiceHistoryTab() {
       }
 
       // ۳. کسر فاکتور از لیست محلی
-      const oldInvoices = JSON.parse(localStorage.getItem('shop_accounting_invoices') || '[]');
-      const filteredInvoices = oldInvoices.filter((i: any) => i.id !== inv.id);
-      localStorage.setItem('shop_accounting_invoices', JSON.stringify(filteredInvoices));
+      OfflineDatabase.deleteInvoice(inv.id);
 
       refreshData();
       alert(`سند فاکتور شماره ${inv.invoice_number} با موفقیت ابطال شد و موجودی انبار اصلاح گردید.`);
