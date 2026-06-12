@@ -8,3 +8,4 @@ coverage/
 !.env.example
 /release
 /src/assets/images
+*.zip
